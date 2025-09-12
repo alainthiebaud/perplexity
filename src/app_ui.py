@@ -8,6 +8,7 @@ import pandas as pd
 from .config_loader import ConfigManager
 from .file_io import DataLoader
 from .app_logic import CalculationEngine, _kwh_totals
+from .frais_excel import regrouper_frais_vers_frais_divers, lire_frais_divers
 
 APP_VERSION = 'Chat149'
 
@@ -179,15 +180,26 @@ class AppGUI:
             # Frais divers
             if self.var_frais_path.get():
                 try:
-                    xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
-                    shname = xlsf.sheet_names[0]
-                    self.frais_sheet_name = shname
-                    self.frais_df = xlsf.parse(shname)
-                    tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
-                    self.tree_frais = self._make_tree(tabf)
-                    self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
-                except Exception:
+                    path_resolved = self.config_mgr.resolve_path(self.var_frais_path.get())
+                    
+                    # Tenter lire_frais_divers
+                    df_frais = lire_frais_divers(path_resolved)
+                    
+                    # Si vide -> lancer regrouper + relire
+                    if df_frais.empty:
+                        print("Feuille 'frais divers' vide ou absente, regroupement automatique...")
+                        regrouper_frais_vers_frais_divers(
+                            tri=["Groupe", "Date"], 
+                            ordre="asc", 
+                            excel_path=path_resolved
+                        )
+                        df_frais = lire_frais_divers(path_resolved)
+                    
+                    # Puis _fill_frais_divers_tree
+                    self._fill_frais_divers_tree(df_frais)
+                    
+                except Exception as e:
+                    print(f"Erreur lors du chargement des frais divers: {e}")
                     pass
             # Locataires
             if self.tenants_df is not None and not self.tenants_df.empty:
@@ -242,20 +254,60 @@ class AppGUI:
                 self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
             except Exception: pass
 
+    def _ensure_frais_divers_tree(self):
+        """Crée l'onglet 'Frais divers' si absent et retourne le Treeview."""
+        # Vérifier si l'onglet existe déjà
+        for i in range(self.preview_nb.index("end")):
+            if self.preview_nb.tab(i, "text") == "Frais divers":
+                # Onglet existe, retourner le tree existant
+                tab_widget = self.preview_nb.nametowidget(self.preview_nb.tabs()[i])
+                for child in tab_widget.winfo_children():
+                    if isinstance(child, ttk.Treeview):
+                        return child
+        
+        # Créer nouvel onglet
+        tabf = ttk.Frame(self.preview_nb)
+        self.preview_nb.add(tabf, text="Frais divers")
+        self.tree_frais = self._make_tree(tabf)
+        self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
+        return self.tree_frais
+
+    def _fill_frais_divers_tree(self, df):
+        """Vide et remplit le Treeview avec un DataFrame dynamique (colonnes ajustées)."""
+        tree = self._ensure_frais_divers_tree()
+        self._fill_tree_df(tree, df)
+        self.frais_df = df.copy() if not df.empty else pd.DataFrame()
+
     def _save_frais(self):
+        """Sauvegarde les frais divers avec regroupement automatique."""
         try:
-            path = Path(self.config_mgr.resolve_path(self.var_frais_path.get()))
-            if not path.exists(): raise FileNotFoundError(f"Fichier Frais divers introuvable: {path}")
-            with pd.ExcelWriter(path, engine="openpyxl", mode='a', if_sheet_exists='replace') as wr:
-                sheet_name = getattr(self, 'frais_sheet_name', None)
-                if not sheet_name:
-                    try:
-                        xls = pd.ExcelFile(path); sheet_name = xls.sheet_names[0]
-                    except Exception:
-                        sheet_name = "Frais divers"
-                self.frais_df.to_excel(wr, index=False, sheet_name=sheet_name)
-            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés.")
+            # Récupérer le chemin frais depuis self.var_frais_path
+            path_raw = self.var_frais_path.get()
+            if not path_raw:
+                messagebox.showerror("Erreur", "Aucun chemin de fichier Frais divers configuré")
+                return
+            
+            path = Path(self.config_mgr.resolve_path(path_raw))
+            print(f"Début regroupement vers: {path}")
+            
+            # Appeler regrouper_frais_vers_frais_divers avec tri
+            regrouper_frais_vers_frais_divers(
+                tri=["Groupe", "Date"], 
+                ordre="asc", 
+                excel_path=str(path)
+            )
+            
+            # Relire la feuille via lire_frais_divers pour affichage
+            df_updated = lire_frais_divers(str(path))
+            
+            # Appeler _fill_frais_divers_tree
+            self._fill_frais_divers_tree(df_updated)
+            
+            print("Regroupement et affichage terminés avec succès")
+            messagebox.showinfo("Sauvegarde", "Frais divers regroupés et enregistrés.")
+            
         except Exception as e:
+            print(f"Erreur lors de la sauvegarde des frais: {e}")
             messagebox.showerror("Erreur sauvegarde Frais", str(e))
 
     def _prepare(self):
