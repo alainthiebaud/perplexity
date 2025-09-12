@@ -39,6 +39,59 @@ def modifier_frais(feuille, index_ligne, colonne, nouvelle_valeur):
     with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode='a', if_sheet_exists='replace') as writer:
         df.to_excel(writer, sheet_name=feuille, index=False)
 
+def update_valeur_origine(groupe, source_index, colonne, nouvelle_valeur):
+    """Met à jour une valeur dans la feuille d'origine.
+    
+    Paramètres
+    ----------
+    groupe : str
+        Nom de la feuille source (ex: 'Entretien', 'Maintenance', etc.)
+    source_index : int
+        Index original de la ligne dans la feuille source
+    colonne : str
+        Nom de la colonne à modifier
+    nouvelle_valeur : str/float/int
+        Nouvelle valeur à assigner
+        
+    Retourne
+    --------
+    bool
+        True si la modification a réussi, False sinon
+    """
+    try:
+        # Vérifier que la feuille existe
+        xls = pd.ExcelFile(EXCEL_PATH)
+        if groupe not in xls.sheet_names:
+            print(f"Erreur: La feuille '{groupe}' n'existe pas.")
+            return False
+            
+        # Lire la feuille
+        df = pd.read_excel(EXCEL_PATH, sheet_name=groupe)
+        
+        # Vérifier que l'index existe
+        if source_index >= len(df) or source_index < 0:
+            print(f"Erreur: L'index {source_index} n'existe pas dans la feuille '{groupe}'.")
+            return False
+            
+        # Vérifier que la colonne existe
+        if colonne not in df.columns:
+            print(f"Erreur: La colonne '{colonne}' n'existe pas dans la feuille '{groupe}'.")
+            return False
+            
+        # Mettre à jour la valeur
+        df.at[source_index, colonne] = nouvelle_valeur
+        
+        # Sauvegarder
+        with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode='a', if_sheet_exists='replace') as writer:
+            df.to_excel(writer, sheet_name=groupe, index=False)
+            
+        print(f"Mise à jour réussie: {groupe}[{source_index}].{colonne} = {nouvelle_valeur}")
+        return True
+        
+    except Exception as e:
+        print(f"Erreur lors de la mise à jour: {e}")
+        return False
+
 def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
     """Regroupe toutes les lignes des autres feuilles dans l'onglet 'frais divers'.
 
@@ -52,6 +105,7 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
 
     - Remplace complètement la feuille 'frais divers'.
     - Ajoute une colonne 'Groupe' indiquant la provenance.
+    - Ajoute une colonne 'SourceIndex' indiquant l'index original dans la feuille source.
     - Ne fait aucun regroupement/somme: chaque ligne originale est gardée telle quelle.
     - Si colonne 'Date' présente, elle est tentée en conversion datetime pour un tri fiable.
     """
@@ -66,6 +120,7 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
             continue
         df = df.copy()
         df['Groupe'] = feuille  # Ajoute la colonne Groupe
+        df['SourceIndex'] = df.index  # Ajoute l'index original de la feuille source
         # Tentative de normalisation colonne Date (facultatif)
         for candidate in ["Date", "date"]:
             if candidate in df.columns:
@@ -75,7 +130,7 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
                     pass
         frames.append(df)
     if not frames:
-        colonnes_min = ["Description", "montant (CHF)", "Groupe"]
+        colonnes_min = ["Description", "Montant (CHF)", "Groupe", "SourceIndex"]
         vide = pd.DataFrame(columns=colonnes_min)
         with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode='a', if_sheet_exists='replace') as writer:
             vide.to_excel(writer, sheet_name='frais divers', index=False)
