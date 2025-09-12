@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import json
 
@@ -49,14 +48,14 @@ class ConfigManager:
         if not p:
             return ""
         s = str(p)
-        s_norm = s.replace("\\", "/").replace("\", "/")
+        s_norm = s.replace("\\", "/")
         candidates = [s_norm]
         if "C:/Users/a.thiebaud.IS" in s_norm:
             candidates.append(s_norm.replace("C:/Users/a.thiebaud.IS", "C:/Users/a.thiebaud"))
         # backslash variants
         for c in list(candidates):
             candidates.append(c.replace("/", "\\"))
-            candidates.append(c.replace("/", "\"))
+            candidates.append(c.replace("/", "\\"))
         for c in candidates:
             try:
                 if Path(c).exists():
