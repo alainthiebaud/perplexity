@@ -45,16 +45,14 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
     Paramètres
     ----------
     tri : str | list[str] | None
-        Colonne ou liste de colonnes sur lesquelles trier le résultat. Ex: 'Date' ou ['Feuille','Date'].
+        Colonne ou liste de colonnes sur lesquelles trier le résultat.
         Si None : pas de tri (ordre d'assemblage).
     ordre : str
         'asc' (défaut) ou 'desc'. S'applique à toutes les colonnes de tri.
 
-    Comportement
-    ------------
     - Remplace complètement la feuille 'frais divers'.
     - Ajoute une colonne 'Feuille' indiquant la provenance.
-    - Aucune agrégation: chaque ligne originale est recopiée.
+    - Ne fait aucun regroupement/somme: chaque ligne originale est gardée telle quelle.
     - Si colonne 'Date' présente, elle est tentée en conversion datetime pour un tri fiable.
     """
     feuilles = get_feuilles()
@@ -87,7 +85,6 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
     if tri:
         by = tri if isinstance(tri, (list, tuple)) else [tri]
         asc = True if ordre.lower() == 'asc' else False
-        # On ne garde que les colonnes existantes dans by
         by_valides = [c for c in by if c in frais_divers.columns]
         if by_valides:
             try:
@@ -112,34 +109,7 @@ def lire_frais_divers():
         print(f"Impossible de lire la feuille 'frais divers': {e}")
         return None
 
-def trier_frais_divers(colonnes, ordre='asc'):
-    """Relit la feuille 'frais divers', applique un tri et réécrit la feuille.
-
-    colonnes : str | list[str]
-        Colonne(s) sur lesquelles trier.
-    ordre : str
-        'asc' ou 'desc'.
-    """
-    df = lire_frais_divers()
-    if df is None:
-        print("Impossible de trier: feuille introuvable.")
-        return
-    by = colonnes if isinstance(colonnes, (list, tuple)) else [colonnes]
-    by_valides = [c for c in by if c in df.columns]
-    if not by_valides:
-        print("Aucune des colonnes de tri n'existe.")
-        return
-    asc = True if ordre.lower() == 'asc' else False
-    try:
-        df = df.sort_values(by=by_valides, ascending=asc, kind='stable')
-    except Exception as e:
-        print(f"Tri impossible: {e}")
-        return
-    with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode='a', if_sheet_exists='replace') as writer:
-        df.to_excel(writer, sheet_name='frais divers', index=False)
-    print(f"Feuille 'frais divers' triée sur {by_valides} (ordre {'ascendant' if asc else 'descendant'}).")
-
 if __name__ == "__main__":
-    # Exemple d'utilisation rapide avec tri par Date puis Feuille si existent
+    # Exemple d'utilisation rapide avec tri par Date puis Feuille si existant
     regrouper_frais_vers_frais_divers(tri=["Date", "Feuille"], ordre='asc')
     print(lire_frais_divers())
