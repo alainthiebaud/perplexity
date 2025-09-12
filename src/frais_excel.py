@@ -3,9 +3,9 @@ import pandas as pd
 EXCEL_PATH = "assets/frais_divers_annuels.xlsx"
 
 def get_feuilles():
-    """Retourne la liste des feuilles à traiter (hors 'frais divers')."""
+    """Retourne toutes les feuilles à traiter sauf 'frais divers' (insensible à la casse et espaces)."""
     xls = pd.ExcelFile(EXCEL_PATH)
-    return [f for f in xls.sheet_names if f.lower() != "frais divers"]
+    return [f for f in xls.sheet_names if f.strip().lower() != "frais divers"]
 
 def lire_tous_les_frais():
     """Retourne un dict {feuille: dataframe} pour toutes les feuilles (hors 'frais divers')."""
@@ -51,18 +51,21 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
         'asc' (défaut) ou 'desc'. S'applique à toutes les colonnes de tri.
 
     - Remplace complètement la feuille 'frais divers'.
-    - Ajoute une colonne 'Feuille' indiquant la provenance.
+    - Ajoute une colonne 'Groupe' indiquant la provenance.
     - Ne fait aucun regroupement/somme: chaque ligne originale est gardée telle quelle.
     - Si colonne 'Date' présente, elle est tentée en conversion datetime pour un tri fiable.
     """
     feuilles = get_feuilles()
+    print("Feuilles détectées :", feuilles)
     frames = []
     for feuille in feuilles:
+        print(f"Lecture de la feuille : {feuille}")
         df = pd.read_excel(EXCEL_PATH, sheet_name=feuille)
+        print(df)
         if df.empty:
             continue
         df = df.copy()
-        df['Feuille'] = feuille
+        df['Groupe'] = feuille  # Ajoute la colonne Groupe
         # Tentative de normalisation colonne Date (facultatif)
         for candidate in ["Date", "date"]:
             if candidate in df.columns:
@@ -72,7 +75,7 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
                     pass
         frames.append(df)
     if not frames:
-        colonnes_min = ["Description", "montant (CHF)", "Feuille"]
+        colonnes_min = ["Description", "montant (CHF)", "Groupe"]
         vide = pd.DataFrame(columns=colonnes_min)
         with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode='a', if_sheet_exists='replace') as writer:
             vide.to_excel(writer, sheet_name='frais divers', index=False)
@@ -80,6 +83,8 @@ def regrouper_frais_vers_frais_divers(tri=None, ordre='asc'):
         return
 
     frais_divers = pd.concat(frames, ignore_index=True)
+    print("Résultat final :")
+    print(frais_divers)
 
     # Application du tri si demandé
     if tri:
@@ -110,6 +115,6 @@ def lire_frais_divers():
         return None
 
 if __name__ == "__main__":
-    # Exemple d'utilisation rapide avec tri par Date puis Feuille si existant
-    regrouper_frais_vers_frais_divers(tri=["Date", "Feuille"], ordre='asc')
+    # Exemple d'utilisation rapide avec tri par Groupe puis Date si existant
+    regrouper_frais_vers_frais_divers(tri=["Groupe", "Date"], ordre='asc')
     print(lire_frais_divers())
