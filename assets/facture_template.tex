@@ -1,0 +1,56 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{geometry}
+\geometry{margin=2cm}
+
+\begin{document}
+
+% Logo en haut à gauche
+\begin{minipage}{0.4\textwidth}
+    \includegraphics[height=2.5cm]{assets/logo.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.55\textwidth}
+    \raggedleft
+    {\Large \textbf{Nom de l'entreprise}}\\
+    Adresse de l'entreprise\\
+    Code Postal, Ville\\
+    Téléphone: 01 23 45 67 89\\
+    Email: contact@entreprise.com
+\end{minipage}
+
+\vspace{1cm}
+
+{\LARGE \textbf{FACTURE}}
+
+\vspace{0.5cm}
+
+\begin{tabular}{ll}
+\textbf{Facturé à:}        & \textbf{Facture n°:} 001 \\
+Nom du client             & \textbf{Date:} \today \\
+Adresse du client         & \\
+\end{tabular}
+
+\vspace{0.8cm}
+
+\begin{tabular}{|l|c|r|}
+\hline
+\textbf{Description}   & \textbf{Quantité} & \textbf{Prix TTC} \\
+\hline
+Prestation 1           & 1                 & 500€ \\
+Prestation 2           & 2                 & 300€ \\
+\hline
+\end{tabular}
+
+\vspace{0.5cm}
+
+\begin{flushright}
+\textbf{Total à payer : 1100€}
+\end{flushright}
+
+\vspace{2cm}
+
+\textit{Merci de votre confiance. Paiement sous 30 jours.}
+
+\end{document}
