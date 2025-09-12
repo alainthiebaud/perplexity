@@ -1,6 +1,12 @@
 import pandas as pd
 
+# Global variable for Excel path - can be set by the UI
 EXCEL_PATH = "assets/frais_divers_annuels.xlsx"
+
+def set_excel_path(path):
+    """Configure le chemin vers le fichier Excel des frais divers"""
+    global EXCEL_PATH
+    EXCEL_PATH = path
 
 def get_feuilles():
     """Retourne toutes les feuilles à traiter sauf 'frais divers' (insensible à la casse et espaces)."""

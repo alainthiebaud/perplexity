@@ -77,6 +77,40 @@ class AppGUI:
             tv.column(c, width=120, stretch=True)
         for _, row in df.iterrows():
             tv.insert("", "end", values=[row[c] for c in cols])
+    
+    def _fill_tree_frais_hierarchical(self, tv: ttk.Treeview, df: pd.DataFrame):
+        """Remplit le TreeView avec une hiérarchie Groupe -> lignes individuelles"""
+        for c in tv.get_children(): tv.delete(c)
+        if df is None or df.empty:
+            tv["columns"] = ["(vide)"]; tv.heading("(vide)", text="(vide)"); tv.column("(vide)", width=200); return
+            
+        # Colonnes à afficher (sans Groupe qui sera dans la hiérarchie)
+        cols = [c for c in df.columns if c != 'Groupe']
+        tv["columns"] = cols
+        tv["show"] = "tree headings"  # Afficher l'arbre et les en-têtes
+        
+        for c in cols:
+            tv.heading(c, text=c)
+            tv.column(c, width=120, stretch=True)
+        
+        # Grouper par Groupe
+        if 'Groupe' in df.columns:
+            grouped = df.groupby('Groupe')
+            for groupe_name, groupe_df in grouped:
+                # Insérer le nœud parent (groupe)
+                parent_id = tv.insert("", "end", text=groupe_name, values=[""] * len(cols), open=True)
+                
+                # Insérer les enfants (lignes individuelles)
+                for _, row in groupe_df.iterrows():
+                    values = [row[c] for c in cols]
+                    # Tag avec métadonnées: SRC::<groupe>::<source_index>
+                    source_index = row.get('SourceIndex', '')
+                    tag = f"SRC::{groupe_name}::{source_index}"
+                    tv.insert(parent_id, "end", text="", values=values, tags=(tag,))
+        else:
+            # Fallback: affichage plat si pas de colonne Groupe
+            for _, row in df.iterrows():
+                tv.insert("", "end", values=[row[c] for c in cols])
 
     def _build_tabs(self):
         self.nb = ttk.Notebook(self.root); self.nb.pack(fill="both", expand=True)
@@ -176,18 +210,25 @@ class AppGUI:
                 tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text=sh)
                 tv = self._make_tree(tab); self.trees[sh] = tv
                 self._fill_tree_df(tv, df)
-            # Frais divers
+            # Frais divers - chargement hiérarchique
             if self.var_frais_path.get():
                 try:
-                    xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
-                    shname = xlsf.sheet_names[0]
-                    self.frais_sheet_name = shname
-                    self.frais_df = xlsf.parse(shname)
-                    tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
-                    self.tree_frais = self._make_tree(tabf)
-                    self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
-                except Exception:
+                    # Configurer le chemin dans le module frais_excel
+                    from .frais_excel import set_excel_path, regrouper_frais_vers_frais_divers, lire_frais_divers
+                    frais_path = self.config_mgr.resolve_path(self.var_frais_path.get())
+                    set_excel_path(frais_path)
+                    
+                    # Régénérer les frais divers agrégés avec SourceIndex
+                    regrouper_frais_vers_frais_divers()
+                    self.frais_df = lire_frais_divers()
+                    
+                    if self.frais_df is not None and not self.frais_df.empty:
+                        tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
+                        self.tree_frais = self._make_tree(tabf)
+                        self._fill_tree_frais_hierarchical(self.tree_frais, self.frais_df)
+                        self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_frais_cell(ev))
+                except Exception as e:
+                    print(f"Erreur lors du chargement des frais divers: {e}")
                     pass
             # Locataires
             if self.tenants_df is not None and not self.tenants_df.empty:
@@ -230,6 +271,114 @@ class AppGUI:
         self._edit_entry.bind("<Return>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
         self._edit_entry.bind("<FocusOut>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
 
+    def _start_edit_frais_cell(self, event):
+        """Gère l'édition des cellules dans la vue hiérarchique des frais divers"""
+        tv = self.tree_frais
+        region = tv.identify('region', event.x, event.y)
+        if region != 'cell': return
+        
+        col_id = tv.identify_column(event.x)
+        row_id = tv.identify_row(event.y)
+        if not row_id or not col_id: return
+        
+        # Vérifier que c'est un enfant (pas un parent/groupe)
+        parent = tv.parent(row_id)
+        if not parent:
+            # C'est un nœud parent (groupe), pas d'édition
+            return
+            
+        # Récupérer les métadonnées du tag
+        tags = tv.item(row_id, 'tags')
+        if not tags or not tags[0].startswith('SRC::'):
+            print("Erreur: pas de métadonnées trouvées pour cette ligne")
+            return
+            
+        tag = tags[0]  # Format: SRC::<groupe>::<source_index>
+        parts = tag.split('::')
+        if len(parts) != 3:
+            print(f"Erreur: format de tag invalide: {tag}")
+            return
+            
+        groupe = parts[1]
+        try:
+            source_index = int(parts[2])
+        except ValueError:
+            print(f"Erreur: SourceIndex invalide: {parts[2]}")
+            return
+            
+        col_index = int(col_id.replace('#','')) - 1
+        col_name = tv['columns'][col_index]
+        
+        # Vérifier que la colonne est éditable
+        if col_name in ['Groupe', 'SourceIndex']:
+            print(f"La colonne '{col_name}' n'est pas éditable")
+            return
+            
+        # Commencer l'édition
+        x, y, w, h = tv.bbox(row_id, col_id)
+        value = tv.set(row_id, col_name)
+        self._edit_entry = tk.Entry(tv)
+        self._edit_entry.insert(0, value)
+        self._edit_entry.place(x=x, y=y, width=w, height=h)
+        self._edit_entry.focus_set()
+        
+        # Stocker les métadonnées pour la validation
+        self._edit_metadata = {
+            'tv': tv, 'row_id': row_id, 'col_name': col_name,
+            'groupe': groupe, 'source_index': source_index
+        }
+        
+        self._edit_entry.bind("<Return>", self._commit_edit_frais)
+        self._edit_entry.bind("<FocusOut>", self._commit_edit_frais)
+        
+    def _commit_edit_frais(self, event=None):
+        """Valide l'édition dans les frais divers et met à jour la source"""
+        if not hasattr(self, '_edit_entry') or not hasattr(self, '_edit_metadata'):
+            return
+            
+        new_val = self._edit_entry.get()
+        metadata = self._edit_metadata
+        
+        # Nettoyer l'interface d'édition
+        self._edit_entry.destroy()
+        delattr(self, '_edit_entry')
+        delattr(self, '_edit_metadata')
+        
+        if new_val is None:
+            return
+            
+        # Mettre à jour la vue immédiatement
+        metadata['tv'].set(metadata['row_id'], metadata['col_name'], new_val)
+        
+        # Mettre à jour la feuille source
+        from .frais_excel import set_excel_path, update_valeur_origine, regrouper_frais_vers_frais_divers, lire_frais_divers
+        
+        # Configurer le chemin
+        if self.var_frais_path.get():
+            frais_path = self.config_mgr.resolve_path(self.var_frais_path.get())
+            set_excel_path(frais_path)
+        
+        success = update_valeur_origine(
+            metadata['groupe'], 
+            metadata['source_index'], 
+            metadata['col_name'], 
+            new_val
+        )
+        
+        if success:
+            try:
+                # Régénérer la feuille agrégée
+                regrouper_frais_vers_frais_divers()
+                self.frais_df = lire_frais_divers()
+                
+                # Recharger la vue
+                self._fill_tree_frais_hierarchical(self.tree_frais, self.frais_df)
+                print(f"Modification appliquée: {metadata['groupe']}[{metadata['source_index']}].{metadata['col_name']} = {new_val}")
+            except Exception as e:
+                print(f"Erreur lors de la régénération: {e}")
+        else:
+            print("Échec de la mise à jour, modification annulée")
+
     def _commit_edit(self, tv, row_id, col_index, df_name):
         new_val = self._edit_entry.get() if hasattr(self, "_edit_entry") else None
         if hasattr(self, "_edit_entry"): self._edit_entry.destroy(); delattr(self, "_edit_entry")
@@ -243,20 +392,27 @@ class AppGUI:
             except Exception: pass
 
     def _save_frais(self):
+        """Enregistre les modifications des frais divers (maintenant géré automatiquement)"""
         try:
-            path = Path(self.config_mgr.resolve_path(self.var_frais_path.get()))
-            if not path.exists(): raise FileNotFoundError(f"Fichier Frais divers introuvable: {path}")
-            with pd.ExcelWriter(path, engine="openpyxl", mode='a', if_sheet_exists='replace') as wr:
-                sheet_name = getattr(self, 'frais_sheet_name', None)
-                if not sheet_name:
-                    try:
-                        xls = pd.ExcelFile(path); sheet_name = xls.sheet_names[0]
-                    except Exception:
-                        sheet_name = "Frais divers"
-                self.frais_df.to_excel(wr, index=False, sheet_name=sheet_name)
-            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés.")
+            # Avec la nouvelle implémentation, les modifications sont automatiquement sauvées
+            # lors de chaque édition, mais on peut forcer une régénération
+            from .frais_excel import set_excel_path, regrouper_frais_vers_frais_divers, lire_frais_divers
+            
+            if self.var_frais_path.get():
+                frais_path = self.config_mgr.resolve_path(self.var_frais_path.get())
+                set_excel_path(frais_path)
+                
+                regrouper_frais_vers_frais_divers()
+                self.frais_df = lire_frais_divers()
+                
+                if hasattr(self, 'tree_frais') and self.tree_frais:
+                    self._fill_tree_frais_hierarchical(self.tree_frais, self.frais_df)
+                    
+                messagebox.showinfo("Frais divers", "Données des frais divers régénérées avec succès.")
+            else:
+                messagebox.showwarning("Attention", "Aucun fichier de frais divers configuré.")
         except Exception as e:
-            messagebox.showerror("Erreur sauvegarde Frais", str(e))
+            messagebox.showerror("Erreur", f"Erreur lors de la régénération des frais divers: {e}")
 
     def _prepare(self):
         try:
