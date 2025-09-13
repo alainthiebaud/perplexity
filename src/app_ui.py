@@ -77,6 +77,69 @@ class AppGUI:
             tv.column(c, width=120, stretch=True)
         for _, row in df.iterrows():
             tv.insert("", "end", values=[row[c] for c in cols])
+    
+    def _fill_tree_hierarchical_frais(self, tv: ttk.Treeview, df: pd.DataFrame):
+        """Fill tree with hierarchical display grouped by 'Groupe' column."""
+        for c in tv.get_children(): tv.delete(c)
+        if df is None or df.empty:
+            tv["columns"] = ["(vide)"]; tv.heading("(vide)", text="(vide)"); tv.column("(vide)", width=200); return
+        
+        cols = list(df.columns)
+        tv["columns"] = cols
+        for c in cols:
+            tv.heading(c, text=c)
+            tv.column(c, width=120, stretch=True)
+        
+        # Check if 'Groupe' column exists for hierarchical display
+        if 'Groupe' not in df.columns:
+            # Fallback to flat display if no Groupe column
+            for _, row in df.iterrows():
+                tv.insert("", "end", values=[row[c] for c in cols])
+            return
+        
+        # Group data by 'Groupe' column
+        grouped = df.groupby('Groupe', sort=False)
+        
+        # Store mapping of tree items to dataframe indices for editing
+        self._tree_to_df_mapping = {}
+        
+        for groupe_name, groupe_df in grouped:
+            # Calculate total for the group
+            montant_col = None
+            for col in cols:
+                if 'montant' in col.lower() or 'chf' in col.lower():
+                    montant_col = col
+                    break
+            
+            total_str = ""
+            if montant_col:
+                try:
+                    total = pd.to_numeric(groupe_df[montant_col], errors='coerce').sum()
+                    total_str = f" - Total: {total:,.2f} CHF"
+                except:
+                    pass
+            
+            # Create parent node for the group
+            parent_values = [''] * len(cols)
+            groupe_col_idx = cols.index('Groupe')
+            parent_values[groupe_col_idx] = f"📁 {groupe_name} ({len(groupe_df)} éléments{total_str})"
+            
+            parent_id = tv.insert("", "end", values=parent_values, open=True, tags=("group",))
+            
+            # Add child rows under the group
+            for idx, (_, row) in enumerate(groupe_df.iterrows()):
+                child_values = [row[c] for c in cols]
+                child_id = tv.insert(parent_id, "end", values=child_values, tags=("item",))
+                # Map tree item to dataframe index for editing
+                self._tree_to_df_mapping[child_id] = row.name
+        
+        # Configure tags for visual distinction
+        tv.tag_configure("group", background="#e8f4fd", font=("TkDefaultFont", 9, "bold"))
+        tv.tag_configure("item", background="#ffffff")
+        
+        # Add context menu for right-click functionality
+        if not hasattr(self, '_frais_context_menu'):
+            self._setup_frais_context_menu(tv)
 
     def _build_tabs(self):
         self.nb = ttk.Notebook(self.root); self.nb.pack(fill="both", expand=True)
@@ -185,8 +248,8 @@ class AppGUI:
                     self.frais_df = xlsf.parse(shname)
                     tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
                     self.tree_frais = self._make_tree(tabf)
-                    self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
+                    self._fill_tree_hierarchical_frais(self.tree_frais, self.frais_df)
+                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell_hierarchical(ev, self.tree_frais, 'frais'))
                 except Exception:
                     pass
             # Locataires
@@ -230,6 +293,26 @@ class AppGUI:
         self._edit_entry.bind("<Return>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
         self._edit_entry.bind("<FocusOut>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
 
+    def _start_edit_cell_hierarchical(self, event, tv, df_name):
+        """Handle editing for hierarchical tree structure."""
+        region = tv.identify('region', event.x, event.y)
+        if region != 'cell': return
+        col_id = tv.identify_column(event.x); row_id = tv.identify_row(event.y)
+        if not row_id or not col_id: return
+        
+        # Check if this is a group header (parent node)
+        if not tv.parent(row_id):  # Top-level item (group header)
+            # Don't allow editing of group headers
+            return
+        
+        # This is a child item, allow editing
+        col_index = int(col_id.replace('#','')) - 1
+        x,y,w,h = tv.bbox(row_id, col_id); value = tv.set(row_id, tv['columns'][col_index])
+        self._edit_entry = tk.Entry(tv); self._edit_entry.insert(0, value)
+        self._edit_entry.place(x=x, y=y, width=w, height=h); self._edit_entry.focus_set()
+        self._edit_entry.bind("<Return>", lambda e: self._commit_edit_hierarchical(tv, row_id, col_index, df_name))
+        self._edit_entry.bind("<FocusOut>", lambda e: self._commit_edit_hierarchical(tv, row_id, col_index, df_name))
+
     def _commit_edit(self, tv, row_id, col_index, df_name):
         new_val = self._edit_entry.get() if hasattr(self, "_edit_entry") else None
         if hasattr(self, "_edit_entry"): self._edit_entry.destroy(); delattr(self, "_edit_entry")
@@ -241,6 +324,56 @@ class AppGUI:
                 r_index = tv.index(row_id); col_name = cols[col_index]
                 self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
             except Exception: pass
+
+    def _commit_edit_hierarchical(self, tv, row_id, col_index, df_name):
+        """Handle committing edits for hierarchical tree structure."""
+        new_val = self._edit_entry.get() if hasattr(self, "_edit_entry") else None
+        if hasattr(self, "_edit_entry"): self._edit_entry.destroy(); delattr(self, "_edit_entry")
+        if new_val is None: return
+        
+        cols = list(tv['columns']); row_vals = list(tv.item(row_id, 'values')); row_vals[col_index] = new_val
+        tv.item(row_id, values=row_vals)
+        
+        if df_name == 'frais' and isinstance(self.frais_df, pd.DataFrame) and not self.frais_df.empty:
+            try:
+                # Use the mapping to find the correct dataframe index
+                if hasattr(self, '_tree_to_df_mapping') and row_id in self._tree_to_df_mapping:
+                    df_index = self._tree_to_df_mapping[row_id]
+                    col_name = cols[col_index]
+                    self.frais_df.at[df_index, col_name] = new_val
+                    
+                    # Update group header count if needed
+                    parent_id = tv.parent(row_id)
+                    if parent_id and col_name == 'Groupe':
+                        # If the group was changed, we need to refresh the entire tree
+                        self._fill_tree_hierarchical_frais(tv, self.frais_df)
+            except Exception: pass
+
+    def _setup_frais_context_menu(self, tv):
+        """Setup context menu for frais tree."""
+        self._frais_context_menu = tk.Menu(self.root, tearoff=0)
+        self._frais_context_menu.add_command(label="Développer tout", command=lambda: self._expand_all_groups(tv))
+        self._frais_context_menu.add_command(label="Réduire tout", command=lambda: self._collapse_all_groups(tv))
+        self._frais_context_menu.add_separator()
+        self._frais_context_menu.add_command(label="Actualiser l'affichage", command=lambda: self._fill_tree_hierarchical_frais(tv, self.frais_df))
+        
+        def show_context_menu(event):
+            try:
+                self._frais_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._frais_context_menu.grab_release()
+        
+        tv.bind("<Button-3>", show_context_menu)  # Right-click
+
+    def _expand_all_groups(self, tv):
+        """Expand all group nodes in the tree."""
+        for item in tv.get_children():
+            tv.item(item, open=True)
+
+    def _collapse_all_groups(self, tv):
+        """Collapse all group nodes in the tree."""
+        for item in tv.get_children():
+            tv.item(item, open=False)
 
     def _save_frais(self):
         try:
@@ -254,7 +387,12 @@ class AppGUI:
                     except Exception:
                         sheet_name = "Frais divers"
                 self.frais_df.to_excel(wr, index=False, sheet_name=sheet_name)
-            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés.")
+            
+            # Refresh the hierarchical display after saving
+            if hasattr(self, 'tree_frais') and self.tree_frais is not None:
+                self._fill_tree_hierarchical_frais(self.tree_frais, self.frais_df)
+            
+            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés avec hiérarchie mise à jour.")
         except Exception as e:
             messagebox.showerror("Erreur sauvegarde Frais", str(e))
 

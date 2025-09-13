@@ -1,0 +1,23 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test files and temporary files
+test_*.py
+test_*.xlsx
+*.tmp
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Application output
+out/
+*.log
