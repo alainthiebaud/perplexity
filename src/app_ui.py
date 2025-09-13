@@ -70,6 +70,15 @@ class AppGUI:
         for c in tv.get_children(): tv.delete(c)
         if df is None or df.empty:
             tv["columns"] = ["(vide)"]; tv.heading("(vide)", text="(vide)"); tv.column("(vide)", width=200); return
+        
+        # Check if this is a grouped dataframe (has 'Groupe' column) and it's the frais tree
+        if 'Groupe' in df.columns and tv == getattr(self, 'tree_frais', None):
+            self._fill_tree_hierarchical(tv, df)
+        else:
+            self._fill_tree_flat(tv, df)
+    
+    def _fill_tree_flat(self, tv: ttk.Treeview, df: pd.DataFrame):
+        """Fill tree with flat data (original behavior)"""
         cols = list(df.columns)
         tv["columns"] = cols
         for c in cols:
@@ -77,6 +86,25 @@ class AppGUI:
             tv.column(c, width=120, stretch=True)
         for _, row in df.iterrows():
             tv.insert("", "end", values=[row[c] for c in cols])
+    
+    def _fill_tree_hierarchical(self, tv: ttk.Treeview, df: pd.DataFrame):
+        """Fill tree with hierarchical data grouped by 'Groupe' column"""
+        cols = list(df.columns)
+        tv["columns"] = cols
+        for c in cols:
+            tv.heading(c, text=c)
+            tv.column(c, width=120, stretch=True)
+        
+        # Group data by 'Groupe' column
+        grouped = df.groupby('Groupe', sort=False)
+        
+        for group_name, group_df in grouped:
+            # Create parent node for the group
+            group_node = tv.insert("", "end", values=[group_name] + [""] * (len(cols) - 1), open=True)
+            
+            # Add child rows for each item in the group
+            for _, row in group_df.iterrows():
+                tv.insert(group_node, "end", values=[row[c] for c in cols])
 
     def _build_tabs(self):
         self.nb = ttk.Notebook(self.root); self.nb.pack(fill="both", expand=True)
@@ -223,6 +251,12 @@ class AppGUI:
         if region != 'cell': return
         col_id = tv.identify_column(event.x); row_id = tv.identify_row(event.y)
         if not row_id or not col_id: return
+        
+        # Don't allow editing of group header rows (parent nodes)
+        if tv.parent(row_id) == "":  # This is a parent/group node
+            if df_name == 'frais' and hasattr(self, 'frais_df') and 'Groupe' in getattr(self, 'frais_df', pd.DataFrame()).columns:
+                return  # Skip editing group headers
+        
         col_index = int(col_id.replace('#','')) - 1
         x,y,w,h = tv.bbox(row_id, col_id); value = tv.set(row_id, tv['columns'][col_index])
         self._edit_entry = tk.Entry(tv); self._edit_entry.insert(0, value)
@@ -238,9 +272,36 @@ class AppGUI:
         tv.item(row_id, values=row_vals)
         if df_name == 'frais' and isinstance(self.frais_df, pd.DataFrame) and not self.frais_df.empty:
             try:
-                r_index = tv.index(row_id); col_name = cols[col_index]
-                self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
+                # Handle hierarchical editing
+                if 'Groupe' in self.frais_df.columns and tv == getattr(self, 'tree_frais', None):
+                    self._update_frais_df_hierarchical(tv, row_id, col_index, new_val)
+                else:
+                    # Original flat editing
+                    r_index = tv.index(row_id); col_name = cols[col_index]
+                    self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
             except Exception: pass
+    
+    def _update_frais_df_hierarchical(self, tv, row_id, col_index, new_val):
+        """Update DataFrame when editing in hierarchical mode"""
+        try:
+            cols = list(tv['columns'])
+            col_name = cols[col_index]
+            row_values = tv.item(row_id, 'values')
+            
+            # Find the corresponding row in the DataFrame
+            # For hierarchical display, we need to match on all column values
+            groupe_value = row_values[0] if len(row_values) > 0 else ""
+            
+            # If it's a child row (has a parent), get all the row values to match
+            if tv.parent(row_id) != "":  # This is a child row
+                # Find the matching row in the DataFrame
+                for idx, df_row in self.frais_df.iterrows():
+                    # Match all values except the one being edited
+                    if all(str(df_row[cols[i]]) == str(row_values[i]) for i in range(len(cols)) if i != col_index):
+                        self.frais_df.at[idx, col_name] = new_val
+                        break
+        except Exception as e:
+            print(f"Error updating DataFrame in hierarchical mode: {e}")
 
     def _save_frais(self):
         try:
