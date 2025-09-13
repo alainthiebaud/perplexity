@@ -290,6 +290,9 @@ class AppGUI:
                     self.tree_frais.bind("<Button-1>", lambda ev: self._toggle_frais_group(ev))
                     self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))  # Right-click
                     self.tree_frais.bind("<Delete>", lambda ev: self._delete_frais_item(ev))  # Delete key
+                    self.tree_frais.bind("<Return>", lambda ev: self._start_edit_frais_cell(ev))  # Enter key
+                    self.tree_frais.bind("<Left>", lambda ev: self._collapse_selected_group(ev))  # Left arrow
+                    self.tree_frais.bind("<Right>", lambda ev: self._expand_selected_group(ev))  # Right arrow
                 except Exception:
                     pass
             # Locataires
@@ -474,6 +477,40 @@ class AppGUI:
             
             # Update category total
             self._update_category_total(tv, parent_id, sheet_name)
+
+    def _collapse_selected_group(self, event):
+        """Collapse the selected group using Left arrow key"""
+        tv = self.tree_frais
+        selected = tv.selection()
+        if selected:
+            item_id = selected[0]
+            # If it's a child, select and collapse its parent
+            parent_id = tv.parent(item_id)
+            if parent_id:
+                tv.selection_set(parent_id)
+                tv.item(parent_id, open=False)
+                self._update_expanded_state(tv)
+            # If it's already a parent, collapse it
+            elif not tv.parent(item_id):
+                tv.item(item_id, open=False)
+                self._update_expanded_state(tv)
+
+    def _expand_selected_group(self, event):
+        """Expand the selected group using Right arrow key"""
+        tv = self.tree_frais
+        selected = tv.selection()
+        if selected:
+            item_id = selected[0]
+            parent_id = tv.parent(item_id)
+            # If it's a child, select and expand its parent
+            if parent_id:
+                tv.selection_set(parent_id)
+                tv.item(parent_id, open=True)
+                self._update_expanded_state(tv)
+            # If it's already a parent, expand it
+            elif not tv.parent(item_id):
+                tv.item(item_id, open=True)
+                self._update_expanded_state(tv)
 
     def _save_frais(self):
         try:
