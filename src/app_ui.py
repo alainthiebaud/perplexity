@@ -37,6 +37,8 @@ class AppGUI:
         self.previews = {}
         self.tenants_df = pd.DataFrame()
         self.frais_df = pd.DataFrame()
+        self.frais_sheets = {}  # Dictionary to store all frais sheets
+        self.frais_expanded_state = {}  # Track which groups are expanded
         self.tree_frais = None
         self.tree_pac_energy = None
 
@@ -65,6 +67,102 @@ class AppGUI:
         tv.pack(side="left", fill="both", expand=True, padx=6, pady=6)
         vsb.pack(side="right", fill="y")
         return tv
+
+    def _make_hierarchical_tree(self, parent):
+        """Create a hierarchical tree view for frais divers"""
+        tv = ttk.Treeview(parent, show="tree headings", height=16)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
+        tv.configure(yscroll=vsb.set)
+        tv.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+        vsb.pack(side="right", fill="y")
+        
+        # Set up columns for hierarchical display
+        tv["columns"] = ("Description", "Montant (CHF)")
+        tv.heading("#0", text="Catégorie", anchor="w")
+        tv.heading("Description", text="Description")
+        tv.heading("Montant (CHF)", text="Montant (CHF)")
+        
+        # Configure column widths
+        tv.column("#0", width=200, minwidth=150)
+        tv.column("Description", width=300, minwidth=200)
+        tv.column("Montant (CHF)", width=120, minwidth=100)
+        
+        return tv
+
+    def _fill_hierarchical_tree(self, tv: ttk.Treeview, sheets_dict: dict):
+        """Fill the hierarchical tree with data from all sheets"""
+        # Clear existing items
+        for c in tv.get_children():
+            tv.delete(c)
+        
+        if not sheets_dict:
+            return
+        
+        # Add each sheet as a parent category
+        for sheet_name, df in sheets_dict.items():
+            # Calculate total for this category
+            if df is not None and not df.empty and 'Montant (CHF)' in df.columns:
+                total = df['Montant (CHF)'].sum()
+                category_text = f"📁 {sheet_name} (Total: {total:.2f} CHF)"
+            else:
+                category_text = f"📁 {sheet_name}"
+            
+            # Create parent node for the category
+            expanded = self.frais_expanded_state.get(sheet_name, True)  # Default to expanded
+            parent_id = tv.insert("", "end", text=category_text, open=expanded, values=("", ""))
+            
+            # Add items from the sheet as children
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    description = str(row.get('Description', ''))
+                    montant = row.get('Montant (CHF)', 0)
+                    tv.insert(parent_id, "end", text="", values=(description, montant))
+        
+        # Store reference for expand/collapse state tracking
+        self._update_expanded_state(tv)
+
+    def _get_sheet_name_from_parent_text(self, parent_text):
+        """Extract sheet name from parent text, handling total display format"""
+        if parent_text.startswith("📁 "):
+            text_without_icon = parent_text[2:]  # Remove "📁 " prefix
+            # Remove total information if present
+            if " (Total:" in text_without_icon:
+                return text_without_icon.split(" (Total:")[0]
+            return text_without_icon
+        return parent_text
+
+    def _update_expanded_state(self, tv: ttk.Treeview):
+        """Update the expanded state tracking"""
+        for parent_id in tv.get_children():
+            parent_text = tv.item(parent_id, "text")
+            sheet_name = self._get_sheet_name_from_parent_text(parent_text)
+            self.frais_expanded_state[sheet_name] = tv.item(parent_id, "open")
+
+    def _update_category_total(self, tv: ttk.Treeview, parent_id, sheet_name):
+        """Update the total display for a category"""
+        if sheet_name in self.frais_sheets:
+            df = self.frais_sheets[sheet_name]
+            if 'Montant (CHF)' in df.columns:
+                total = df['Montant (CHF)'].sum()
+                new_text = f"📁 {sheet_name} (Total: {total:.2f} CHF)"
+                tv.item(parent_id, text=new_text)
+        """Update the expanded state tracking"""
+        for parent_id in tv.get_children():
+            parent_text = tv.item(parent_id, "text")
+            if parent_text.startswith("📁 "):
+                sheet_name = parent_text[2:]  # Remove "📁 " prefix
+                self.frais_expanded_state[sheet_name] = tv.item(parent_id, "open")
+
+    def _toggle_frais_group(self, event):
+        """Handle click on group headers to toggle expand/collapse"""
+        tv = self.tree_frais
+        region = tv.identify('region', event.x, event.y)
+        if region == 'tree':
+            row_id = tv.identify_row(event.y)
+            if row_id and not tv.parent(row_id):  # This is a parent node
+                current_state = tv.item(row_id, "open")
+                tv.item(row_id, open=not current_state)
+                self._update_expanded_state(tv)
 
     def _fill_tree_df(self, tv: ttk.Treeview, df: pd.DataFrame):
         for c in tv.get_children(): tv.delete(c)
@@ -180,13 +278,18 @@ class AppGUI:
             if self.var_frais_path.get():
                 try:
                     xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
-                    shname = xlsf.sheet_names[0]
-                    self.frais_sheet_name = shname
-                    self.frais_df = xlsf.parse(shname)
+                    # Load all sheets for hierarchical display
+                    self.frais_sheets = {}
+                    for sheet_name in xlsf.sheet_names:
+                        self.frais_sheets[sheet_name] = xlsf.parse(sheet_name)
+                    
                     tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
-                    self.tree_frais = self._make_tree(tabf)
-                    self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
+                    self.tree_frais = self._make_hierarchical_tree(tabf)
+                    self._fill_hierarchical_tree(self.tree_frais, self.frais_sheets)
+                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_frais_cell(ev))
+                    self.tree_frais.bind("<Button-1>", lambda ev: self._toggle_frais_group(ev))
+                    self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))  # Right-click
+                    self.tree_frais.bind("<Delete>", lambda ev: self._delete_frais_item(ev))  # Delete key
                 except Exception:
                     pass
             # Locataires
@@ -218,42 +321,171 @@ class AppGUI:
             self.lbl_load_status.configure(text="Erreur")
             messagebox.showerror("Erreur chargement", f"{e}\n\nVérifiez les chemins dans l’onglet Fichiers & Config (ou cliquez ‘Vérifier les chemins’).")
 
-    def _start_edit_cell(self, event, tv, df_name):
-        region = tv.identify('region', event.x, event.y); 
-        if region != 'cell': return
-        col_id = tv.identify_column(event.x); row_id = tv.identify_row(event.y)
-        if not row_id or not col_id: return
+    def _start_edit_frais_cell(self, event):
+        """Start editing a cell in the hierarchical frais tree"""
+        tv = self.tree_frais
+        region = tv.identify('region', event.x, event.y)
+        if region != 'cell':
+            return
+        
+        col_id = tv.identify_column(event.x)
+        row_id = tv.identify_row(event.y)
+        if not row_id or not col_id:
+            return
+        
+        # Don't allow editing parent nodes (category headers)
+        if not tv.parent(row_id):
+            return
+        
         col_index = int(col_id.replace('#','')) - 1
-        x,y,w,h = tv.bbox(row_id, col_id); value = tv.set(row_id, tv['columns'][col_index])
-        self._edit_entry = tk.Entry(tv); self._edit_entry.insert(0, value)
-        self._edit_entry.place(x=x, y=y, width=w, height=h); self._edit_entry.focus_set()
-        self._edit_entry.bind("<Return>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
-        self._edit_entry.bind("<FocusOut>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
+        if col_index < 0:  # Don't edit the tree column
+            return
+            
+        x, y, w, h = tv.bbox(row_id, col_id)
+        value = tv.set(row_id, tv['columns'][col_index])
+        
+        self._edit_entry = tk.Entry(tv)
+        self._edit_entry.insert(0, value)
+        self._edit_entry.place(x=x, y=y, width=w, height=h)
+        self._edit_entry.focus_set()
+        self._edit_entry.bind("<Return>", lambda e: self._commit_frais_edit(tv, row_id, col_index))
+        self._edit_entry.bind("<FocusOut>", lambda e: self._commit_frais_edit(tv, row_id, col_index))
 
-    def _commit_edit(self, tv, row_id, col_index, df_name):
+    def _commit_frais_edit(self, tv, row_id, col_index):
+        """Commit the edit to the hierarchical frais data"""
         new_val = self._edit_entry.get() if hasattr(self, "_edit_entry") else None
-        if hasattr(self, "_edit_entry"): self._edit_entry.destroy(); delattr(self, "_edit_entry")
-        if new_val is None: return
-        cols = list(tv['columns']); row_vals = list(tv.item(row_id, 'values')); row_vals[col_index] = new_val
+        if hasattr(self, "_edit_entry"):
+            self._edit_entry.destroy()
+            delattr(self, "_edit_entry")
+        
+        if new_val is None:
+            return
+        
+        # Update the tree view
+        cols = tv['columns']
+        row_vals = list(tv.item(row_id, 'values'))
+        row_vals[col_index] = new_val
         tv.item(row_id, values=row_vals)
-        if df_name == 'frais' and isinstance(self.frais_df, pd.DataFrame) and not self.frais_df.empty:
-            try:
-                r_index = tv.index(row_id); col_name = cols[col_index]
-                self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
-            except Exception: pass
+        
+        # Update the underlying data
+        parent_id = tv.parent(row_id)
+        if parent_id:
+            parent_text = tv.item(parent_id, "text")
+            sheet_name = self._get_sheet_name_from_parent_text(parent_text)
+            
+            # Find the row index within the parent
+            children = tv.get_children(parent_id)
+            row_index = list(children).index(row_id)
+            
+            if sheet_name in self.frais_sheets:
+                df = self.frais_sheets[sheet_name]
+                if 0 <= row_index < len(df):
+                    col_name = cols[col_index]
+                    
+                    # Handle numeric conversion for Montant column
+                    if col_name == "Montant (CHF)":
+                        try:
+                            new_val = float(new_val) if new_val else 0
+                        except ValueError:
+                            new_val = 0
+                    
+                    df.iloc[row_index, df.columns.get_loc(col_name)] = new_val
+                    
+                    # Update the parent category total
+                    self._update_category_total(tv, parent_id, sheet_name)
+
+    def _show_frais_context_menu(self, event):
+        """Show context menu for adding/deleting items"""
+        tv = self.tree_frais
+        row_id = tv.identify_row(event.y)
+        
+        # Create context menu
+        menu = tk.Menu(tv, tearoff=0)
+        
+        if row_id:
+            parent_id = tv.parent(row_id)
+            if parent_id:  # Child item selected
+                menu.add_command(label="Ajouter un nouvel élément", command=lambda: self._add_frais_item(parent_id))
+                menu.add_command(label="Supprimer cet élément", command=lambda: self._delete_frais_item_by_id(row_id))
+            else:  # Parent category selected
+                menu.add_command(label="Ajouter un nouvel élément", command=lambda: self._add_frais_item(row_id))
+        
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _add_frais_item(self, parent_id):
+        """Add a new item to a frais category"""
+        tv = self.tree_frais
+        parent_text = tv.item(parent_id, "text")
+        sheet_name = self._get_sheet_name_from_parent_text(parent_text)
+        
+        if sheet_name in self.frais_sheets:
+            # Add to dataframe
+            df = self.frais_sheets[sheet_name]
+            new_row = pd.DataFrame([{"Description": "Nouvelle entrée", "Montant (CHF)": 0}])
+            self.frais_sheets[sheet_name] = pd.concat([df, new_row], ignore_index=True)
+            
+            # Add to tree view
+            new_item = tv.insert(parent_id, "end", text="", values=("Nouvelle entrée", 0))
+            
+            # Update category total
+            self._update_category_total(tv, parent_id, sheet_name)
+            
+            # Select and start editing the new item
+            tv.selection_set(new_item)
+            tv.focus(new_item)
+
+    def _delete_frais_item(self, event):
+        """Delete selected item using Delete key"""
+        tv = self.tree_frais
+        selected = tv.selection()
+        if selected:
+            self._delete_frais_item_by_id(selected[0])
+
+    def _delete_frais_item_by_id(self, row_id):
+        """Delete a specific frais item"""
+        tv = self.tree_frais
+        parent_id = tv.parent(row_id)
+        
+        if not parent_id:  # Don't delete category headers
+            return
+        
+        # Confirm deletion
+        if not messagebox.askyesno("Confirmation", "Êtes-vous sûr de vouloir supprimer cet élément ?"):
+            return
+        
+        parent_text = tv.item(parent_id, "text")
+        sheet_name = self._get_sheet_name_from_parent_text(parent_text)
+        
+        # Find the row index within the parent
+        children = tv.get_children(parent_id)
+        row_index = list(children).index(row_id)
+        
+        if sheet_name in self.frais_sheets:
+            # Remove from dataframe
+            df = self.frais_sheets[sheet_name]
+            if 0 <= row_index < len(df):
+                self.frais_sheets[sheet_name] = df.drop(df.index[row_index]).reset_index(drop=True)
+            
+            # Remove from tree view
+            tv.delete(row_id)
+            
+            # Update category total
+            self._update_category_total(tv, parent_id, sheet_name)
 
     def _save_frais(self):
         try:
             path = Path(self.config_mgr.resolve_path(self.var_frais_path.get()))
-            if not path.exists(): raise FileNotFoundError(f"Fichier Frais divers introuvable: {path}")
-            with pd.ExcelWriter(path, engine="openpyxl", mode='a', if_sheet_exists='replace') as wr:
-                sheet_name = getattr(self, 'frais_sheet_name', None)
-                if not sheet_name:
-                    try:
-                        xls = pd.ExcelFile(path); sheet_name = xls.sheet_names[0]
-                    except Exception:
-                        sheet_name = "Frais divers"
-                self.frais_df.to_excel(wr, index=False, sheet_name=sheet_name)
+            if not path.exists(): 
+                raise FileNotFoundError(f"Fichier Frais divers introuvable: {path}")
+            
+            # Save all sheets with their hierarchical data
+            with pd.ExcelWriter(path, engine="openpyxl", mode='w') as writer:
+                for sheet_name, df in self.frais_sheets.items():
+                    df.to_excel(writer, index=False, sheet_name=sheet_name)
+            
             messagebox.showinfo("Sauvegarde", "Frais divers enregistrés.")
         except Exception as e:
             messagebox.showerror("Erreur sauvegarde Frais", str(e))
