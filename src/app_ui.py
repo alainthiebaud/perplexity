@@ -527,15 +527,27 @@ class AppGUI:
         try:
             path = Path(self.config_mgr.resolve_path(self.var_frais_path.get()))
             if not path.exists(): raise FileNotFoundError(f"Fichier Frais divers introuvable: {path}")
+            
+            # Préparer les données pour la sauvegarde
+            save_df = self.frais_df.copy()
+            
+            # Si on a une colonne '__Feuille__', la mapper vers 'Groupe' pour la sauvegarde
+            if '__Feuille__' in save_df.columns:
+                # Si pas de colonne 'Groupe' existante, créer une à partir de '__Feuille__'
+                if 'Groupe' not in save_df.columns:
+                    save_df['Groupe'] = save_df['__Feuille__']
+                else:
+                    # Utiliser '__Feuille__' quand 'Groupe' est manquant/vide
+                    mask = save_df['Groupe'].isna() | (save_df['Groupe'] == '') | (save_df['Groupe'] == 'nan')
+                    save_df.loc[mask, 'Groupe'] = save_df.loc[mask, '__Feuille__']
+                
+                # Supprimer la colonne '__Feuille__' pour la sauvegarde (elle n'existait pas dans le format original)
+                save_df = save_df.drop(columns=['__Feuille__'])
+            
             with pd.ExcelWriter(path, engine="openpyxl", mode='a', if_sheet_exists='replace') as wr:
-                sheet_name = getattr(self, 'frais_sheet_name', None)
-                if not sheet_name:
-                    try:
-                        xls = pd.ExcelFile(path); sheet_name = xls.sheet_names[0]
-                    except Exception:
-                        sheet_name = "Frais divers"
-                self.frais_df.to_excel(wr, index=False, sheet_name=sheet_name)
-            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés.")
+                # Toujours sauvegarder dans la feuille 'frais divers' maintenant
+                save_df.to_excel(wr, index=False, sheet_name='frais divers')
+            messagebox.showinfo("Sauvegarde", "Frais divers enregistrés (données consolidées dans 'frais divers').")
         except Exception as e:
             messagebox.showerror("Erreur sauvegarde Frais", str(e))
 
