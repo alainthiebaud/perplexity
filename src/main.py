@@ -1,8 +1,10 @@
-
 import tkinter as tk
-from src.app_ui import AppGUI
+from src.app_ui import App
 
 def main():
     root = tk.Tk()
-    AppGUI(root)
+    app = App(root)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()
