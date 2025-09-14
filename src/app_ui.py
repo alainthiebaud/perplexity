@@ -1,22 +1,27 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import os, sys, subprocess
+import os, sys, subprocess, json, hashlib
 import pandas as pd
 
 from .config_loader import ConfigManager
 from .file_io import DataLoader
 from .app_logic import CalculationEngine, _kwh_totals
 
-APP_VERSION = 'Chat149'
+# APP_VERSION de base; la partie numérique sera incrémentée automatiquement à chaque modification du fichier
+APP_VERSION_PREFIX = 'Chat'
+APP_VERSION_BASE_NUMBER = 149  # point de départ si aucun historique
 
 class AppGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"Répartition des Charges - Annuel ({APP_VERSION})")
         self.base_dir = Path(os.path.dirname(os.path.dirname(__file__))).resolve()
         (self.base_dir / "out").mkdir(exist_ok=True, parents=True)
         (self.base_dir / "assets").mkdir(exist_ok=True, parents=True)
+
+        # Version dynamique (s'incrémente si le code de ce fichier a changé)
+        self._init_dynamic_version()
+        self.root.title(f"Répartition des Charges - Annuel ({self.dynamic_version_label})")
 
         style = ttk.Style()
         try: style.theme_use('clam')
@@ -39,7 +44,6 @@ class AppGUI:
         self.tree_frais = None
         self.tree_pac_energy = None
 
-        import json
         defaults = {}
         pjson = (self.base_dir / "assets" / "UserSettings.json")
         if pjson.exists():
@@ -50,7 +54,7 @@ class AppGUI:
         self.var_frais_path   = tk.StringVar(value=self.config_mgr.load_user_setting('frais_path', defaults.get("frais_path","")))
         self.var_si_path      = tk.StringVar(value=self.config_mgr.load_user_setting('si_path', defaults.get("si_path","")))
         self.var_output_dir   = tk.StringVar(value=self.config_mgr.load_user_setting('output_dir', str((self.base_dir/'out').resolve())))
-        # Champ période supprimé de l'UI (on conserve la variable pour compatibilité export)
+        # Variable période conservée pour compatibilité mais plus affichée
         self.var_period       = tk.StringVar(value="2025-07")
 
         self.lbl_load_status = None
@@ -58,6 +62,33 @@ class AppGUI:
 
         self._build_tabs()
 
+    # ------------------- Gestion version dynamique -------------------
+    def _init_dynamic_version(self):
+        try:
+            file_path = Path(__file__).resolve()
+            code_bytes = file_path.read_bytes()
+            current_hash = hashlib.sha256(code_bytes).hexdigest()
+            meta_path = self.base_dir / 'assets' / 'version_meta.json'
+            version_number = APP_VERSION_BASE_NUMBER
+            last_hash = None
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding='utf-8'))
+                    version_number = int(meta.get('version', APP_VERSION_BASE_NUMBER))
+                    last_hash = meta.get('hash')
+                except Exception:
+                    pass
+            if last_hash != current_hash:
+                version_number += 1
+                meta_path.write_text(json.dumps({'version': version_number, 'hash': current_hash}, ensure_ascii=False, indent=2), encoding='utf-8')
+            self.dynamic_version_number = version_number
+            self.dynamic_version_label = f"{APP_VERSION_PREFIX}{version_number}"
+        except Exception:
+            # fallback
+            self.dynamic_version_number = APP_VERSION_BASE_NUMBER
+            self.dynamic_version_label = f"{APP_VERSION_PREFIX}{APP_VERSION_BASE_NUMBER}*"
+
+    # ------------------- UI Helpers -------------------
     def _make_tree(self, parent):
         tv = ttk.Treeview(parent, show="headings", height=16)
         vsb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
@@ -70,15 +101,12 @@ class AppGUI:
         for c in tv.get_children(): tv.delete(c)
         if df is None or df.empty:
             tv["columns"] = ["(vide)"]; tv.heading("(vide)", text="(vide)"); tv.column("(vide)", width=200); return
-        
-        # Check if this is a grouped dataframe (has 'Groupe' column) and it's the frais tree
         if 'Groupe' in df.columns and tv == getattr(self, 'tree_frais', None):
             self._fill_tree_hierarchical(tv, df)
         else:
             self._fill_tree_flat(tv, df)
-    
+
     def _fill_tree_flat(self, tv: ttk.Treeview, df: pd.DataFrame):
-        """Fill tree with flat data (original behavior)"""
         cols = list(df.columns)
         tv["columns"] = cols
         for c in cols:
@@ -86,23 +114,16 @@ class AppGUI:
             tv.column(c, width=120, stretch=True)
         for _, row in df.iterrows():
             tv.insert("", "end", values=[row[c] for c in cols])
-    
+
     def _fill_tree_hierarchical(self, tv: ttk.Treeview, df: pd.DataFrame):
-        """Fill tree with hierarchical data grouped by 'Groupe' column"""
         cols = list(df.columns)
         tv["columns"] = cols
         for c in cols:
             tv.heading(c, text=c)
             tv.column(c, width=120, stretch=True)
-        
-        # Group data by 'Groupe' column
         grouped = df.groupby('Groupe', sort=False)
-        
         for group_name, group_df in grouped:
-            # Create parent node for the group
             group_node = tv.insert("", "end", values=[group_name] + [""] * (len(cols) - 1), open=True)
-            
-            # Add child rows for each item in the group
             for _, row in group_df.iterrows():
                 tv.insert(group_node, "end", values=[row[c] for c in cols])
 
@@ -125,8 +146,6 @@ class AppGUI:
         row("Frais divers (Excel)", self.var_frais_path)
         row("Données SI (Excel)", self.var_si_path)
         row("Dossier de sortie", self.var_output_dir, is_dir=True)
-        # Ligne période supprimée de l'interface
-        # ttk.Label(frm, text="Période (AAAA-MM):").pack(side="left", padx=(2,4)); ttk.Entry(frm, textvariable=self.var_period, width=10).pack(side="left")
 
         vfrm = ttk.Frame(self.tab_files); vfrm.pack(fill="x", padx=10, pady=(0,6))
         ttk.Button(vfrm, text="Vérifier les chemins", command=self._verify_paths).pack(side="left")
@@ -162,6 +181,7 @@ class AppGUI:
         self.tree_files = self._make_tree(self.tab_outputs)
         self.tree_files.bind("<Double-1>", self._open_selected_file)
 
+    # ------------------- Actions principales -------------------
     def _load_and_prepare(self):
         try:
             self.lbl_load_status.configure(text="Chargement...")
@@ -230,8 +250,9 @@ class AppGUI:
                     tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
                     self.tree_frais = self._make_tree(tabf)
                     self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
-                    self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))  # Right-click context menu
+                    # Nouveau: double-clic ouvre un dialogue d'édition, plus d'édition inline
+                    self.tree_frais.bind("<Double-1>", lambda ev: self._edit_frais_dialog(ev))
+                    self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))
                 except Exception:
                     pass
             # Locataires
@@ -263,63 +284,97 @@ class AppGUI:
             self.lbl_load_status.configure(text="Erreur")
             messagebox.showerror("Erreur chargement", f"{e}\n\nVérifiez les chemins dans l’onglet Fichiers & Config (ou cliquez ‘Vérifier les chemins’).")
 
-    def _start_edit_cell(self, event, tv, df_name):
-        region = tv.identify('region', event.x, event.y); 
-        if region != 'cell': return
-        col_id = tv.identify_column(event.x); row_id = tv.identify_row(event.y)
-        if not row_id or not col_id: return
-        
-        # Don't allow editing of group header rows (parent nodes)
-        if tv.parent(row_id) == "":  # This is a parent/group node
-            if df_name == 'frais' and hasattr(self, 'frais_df') and 'Groupe' in getattr(self, 'frais_df', pd.DataFrame()).columns:
-                return  # Skip editing group headers
-        
-        col_index = int(col_id.replace('#','')) - 1
-        x,y,w,h = tv.bbox(row_id, col_id); value = tv.set(row_id, tv['columns'][col_index])
-        self._edit_entry = tk.Entry(tv); self._edit_entry.insert(0, value)
-        self._edit_entry.place(x=x, y=y, width=w, height=h); self._edit_entry.focus_set()
-        self._edit_entry.bind("<Return>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
-        self._edit_entry.bind("<FocusOut>", lambda e: self._commit_edit(tv, row_id, col_index, df_name))
+    # --------- Edition Frais divers (nouvelle méthode via dialogue) ---------
+    def _edit_frais_dialog(self, event_or_id):
+        # event_or_id peut être un évènement ou directement un item_id
+        if isinstance(event_or_id, tk.Event):
+            tv = self.tree_frais
+            item_id = tv.identify_row(event_or_id.y)
+        else:
+            tv = self.tree_frais
+            item_id = event_or_id
+        if not item_id: return
+        # Ne pas éditer les en-têtes de groupe (parent vide)
+        if tv.parent(item_id) == "":
+            return
+        row_values = tv.item(item_id, 'values')
+        cols = list(tv['columns'])
+        # On suppose colonnes: Description / Montant (CHF) / Groupe (ordre quelconque acceptable)
+        data = dict(zip(cols, row_values))
 
-    def _commit_edit(self, tv, row_id, col_index, df_name):
-        new_val = self._edit_entry.get() if hasattr(self, "_edit_entry") else None
-        if hasattr(self, "_edit_entry"): self._edit_entry.destroy(); delattr(self, "_edit_entry")
-        if new_val is None: return
-        cols = list(tv['columns']); row_vals = list(tv.item(row_id, 'values')); row_vals[col_index] = new_val
-        tv.item(row_id, values=row_vals)
-        if df_name == 'frais' and isinstance(self.frais_df, pd.DataFrame) and not self.frais_df.empty:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Modifier une ligne")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        # Champs existants
+        desc_var = tk.StringVar(value=data.get('Description',''))
+        montant_var = tk.StringVar(value=str(data.get('Montant (CHF)', '0')))
+        groupe_var = tk.StringVar(value=data.get('Groupe',''))
+
+        ttk.Label(dialog, text="Description:").grid(row=0, column=0, sticky='w', padx=8, pady=4)
+        ttk.Entry(dialog, textvariable=desc_var, width=40).grid(row=0, column=1, padx=8, pady=4)
+        ttk.Label(dialog, text="Montant (CHF):").grid(row=1, column=0, sticky='w', padx=8, pady=4)
+        ttk.Entry(dialog, textvariable=montant_var, width=20).grid(row=1, column=1, padx=8, pady=4, sticky='w')
+        ttk.Label(dialog, text="Groupe:").grid(row=2, column=0, sticky='w', padx=8, pady=4)
+        # Liste des groupes existants
+        groups = []
+        if 'Groupe' in self.frais_df.columns:
             try:
-                # Handle hierarchical editing
-                if 'Groupe' in self.frais_df.columns and tv == getattr(self, 'tree_frais', None):
-                    self._update_frais_df_hierarchical(tv, row_id, col_index, new_val)
-                else:
-                    # Original flat editing
-                    r_index = tv.index(row_id); col_name = cols[col_index]
-                    self.frais_df.at[self.frais_df.index[r_index], col_name] = new_val
-            except Exception: pass
-    
-    def _update_frais_df_hierarchical(self, tv, row_id, col_index, new_val):
-        """Update DataFrame when editing in hierarchical mode"""
-        try:
-            cols = list(tv['columns'])
-            col_name = cols[col_index]
-            row_values = tv.item(row_id, 'values')
-            
-            # Find the corresponding row in the DataFrame
-            # For hierarchical display, we need to match on all column values
-            groupe_value = row_values[0] if len(row_values) > 0 else ""
-            
-            # If it's a child row (has a parent), get all the row values to match
-            if tv.parent(row_id) != "":  # This is a child row
-                # Find the matching row in the DataFrame
-                for idx, df_row in self.frais_df.iterrows():
-                    # Match all values except the one being edited
-                    if all(str(df_row[cols[i]]) == str(row_values[i]) for i in range(len(cols)) if i != col_index):
-                        self.frais_df.at[idx, col_name] = new_val
-                        break
-        except Exception as e:
-            print(f"Error updating DataFrame in hierarchical mode: {e}")
+                groups = sorted([g for g in self.frais_df['Groupe'].dropna().unique().tolist() if str(g).strip()])
+            except Exception:
+                groups = []
+        if groups:
+            cb = ttk.Combobox(dialog, values=groups, textvariable=groupe_var, state='readonly')
+            cb.grid(row=2, column=1, padx=8, pady=4, sticky='w')
+        else:
+            ttk.Entry(dialog, textvariable=groupe_var, width=20).grid(row=2, column=1, padx=8, pady=4, sticky='w')
 
+        # Boutons
+        btnf = ttk.Frame(dialog); btnf.grid(row=3, column=0, columnspan=2, pady=12)
+        def apply_changes():
+            try:
+                new_desc = desc_var.get().strip()
+                if not new_desc:
+                    messagebox.showwarning("Validation", "Description requise")
+                    return
+                try:
+                    new_amount = float(montant_var.get())
+                except ValueError:
+                    messagebox.showwarning("Validation", "Montant invalide")
+                    return
+                new_group = groupe_var.get().strip()
+                # Localiser la ligne dans le DataFrame
+                updated = False
+                for idx, df_row in self.frais_df.iterrows():
+                    if all(str(df_row[c]) == str(row_values[i]) for i, c in enumerate(cols)):
+                        if 'Description' in cols: self.frais_df.at[idx, 'Description'] = new_desc
+                        if 'Montant (CHF)' in cols: self.frais_df.at[idx, 'Montant (CHF)'] = new_amount
+                        if 'Groupe' in cols: self.frais_df.at[idx, 'Groupe'] = new_group
+                        updated = True
+                        break
+                if updated:
+                    self._fill_tree_df(self.tree_frais, self.frais_df)
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Erreur", str(e))
+        ttk.Button(btnf, text="Enregistrer", command=apply_changes).pack(side='left', padx=6)
+        ttk.Button(btnf, text="Annuler", command=dialog.destroy).pack(side='left', padx=6)
+        dialog.bind('<Return>', lambda _e: apply_changes())
+        dialog.bind('<Escape>', lambda _e: dialog.destroy())
+
+    # (Ancienne édition inline neutralisée)
+    def _start_edit_cell(self, *args, **kwargs):
+        pass
+
+    def _commit_edit(self, *args, **kwargs):
+        pass
+
+    def _update_frais_df_hierarchical(self, *args, **kwargs):
+        pass
+
+    # --------- Ajout / suppression Frais divers ---------
     def _save_frais(self):
         try:
             path = Path(self.config_mgr.resolve_path(self.var_frais_path.get()))
@@ -336,6 +391,95 @@ class AppGUI:
         except Exception as e:
             messagebox.showerror("Erreur sauvegarde Frais", str(e))
 
+    def _show_frais_context_menu(self, event):
+        try:
+            from tkinter import Menu
+            menu = Menu(self.root, tearoff=0)
+            item_id = self.tree_frais.identify_row(event.y) if self.tree_frais else None
+            if item_id:
+                if self.tree_frais.parent(item_id) == "":
+                    menu.add_command(label="Ajouter un élément à ce groupe", command=lambda: self._add_frais_item(item_id))
+                else:
+                    menu.add_command(label="Modifier", command=lambda: self._edit_frais_dialog(item_id))
+                    menu.add_command(label="Supprimer", command=lambda: self._delete_frais_item(item_id))
+            menu.add_separator()
+            menu.add_command(label="Ajouter (nouveau)", command=self._add_frais_item_dialog)
+            menu.tk_popup(event.x_root, event.y_root)
+        except Exception as e:
+            print("Context menu error", e)
+
+    def _add_frais_item(self, parent_group_id=None):
+        if not hasattr(self, 'frais_df') or self.frais_df.empty:
+            messagebox.showwarning("Ajouter", "Aucune donnée Frais divers chargée")
+            return
+        group_name = ""
+        if parent_group_id:
+            vals = self.tree_frais.item(parent_group_id, 'values')
+            group_name = vals[0] if vals else ""
+        self._show_add_frais_dialog(group_name)
+
+    def _add_frais_item_dialog(self):
+        self._show_add_frais_dialog()
+
+    def _show_add_frais_dialog(self, default_group=""):
+        try:
+            from tkinter import Toplevel
+            dlg = Toplevel(self.root); dlg.title("Ajouter un frais")
+            dlg.transient(self.root); dlg.grab_set(); dlg.resizable(False, False)
+            desc_var = tk.StringVar(); montant_var = tk.StringVar(value="0"); groupe_var = tk.StringVar(value=default_group)
+            ttk.Label(dlg, text="Description:").grid(row=0, column=0, sticky='w', padx=8, pady=4)
+            ttk.Entry(dlg, textvariable=desc_var, width=40).grid(row=0, column=1, padx=8, pady=4)
+            ttk.Label(dlg, text="Montant (CHF):").grid(row=1, column=0, sticky='w', padx=8, pady=4)
+            ttk.Entry(dlg, textvariable=montant_var, width=15).grid(row=1, column=1, padx=8, pady=4, sticky='w')
+            ttk.Label(dlg, text="Groupe:").grid(row=2, column=0, sticky='w', padx=8, pady=4)
+            groups = []
+            if 'Groupe' in self.frais_df.columns:
+                try: groups = sorted([g for g in self.frais_df['Groupe'].dropna().unique().tolist() if str(g).strip()])
+                except Exception: groups = []
+            if groups:
+                ttk.Combobox(dlg, values=groups, textvariable=groupe_var, state='readonly').grid(row=2, column=1, padx=8, pady=4, sticky='w')
+            else:
+                ttk.Entry(dlg, textvariable=groupe_var, width=20).grid(row=2, column=1, padx=8, pady=4, sticky='w')
+            btnf = ttk.Frame(dlg); btnf.grid(row=3, column=0, columnspan=2, pady=10)
+            def on_ok():
+                desc = desc_var.get().strip()
+                if not desc:
+                    messagebox.showwarning("Validation", "Description requise"); return
+                try: montant = float(montant_var.get())
+                except ValueError: messagebox.showwarning("Validation", "Montant invalide"); return
+                grp = groupe_var.get().strip() or "Sans groupe"
+                new_row = pd.DataFrame([{ 'Description': desc, 'Montant (CHF)': montant, 'Groupe': grp }])
+                self.frais_df = pd.concat([self.frais_df, new_row], ignore_index=True)
+                self._fill_tree_df(self.tree_frais, self.frais_df)
+                dlg.destroy()
+            ttk.Button(btnf, text="OK", command=on_ok).pack(side='left', padx=6)
+            ttk.Button(btnf, text="Annuler", command=dlg.destroy).pack(side='left', padx=6)
+            dlg.bind('<Return>', lambda _e: on_ok())
+            dlg.bind('<Escape>', lambda _e: dlg.destroy())
+        except Exception as e:
+            messagebox.showerror("Erreur", str(e))
+
+    def _delete_frais_item(self, item_id):
+        try:
+            if not hasattr(self, 'frais_df') or self.frais_df.empty:
+                return
+            row_values = self.tree_frais.item(item_id, 'values')
+            if not row_values: return
+            if self.tree_frais.parent(item_id) == "":
+                messagebox.showwarning("Suppression", "Supprimer directement un groupe n'est pas supporté.")
+                return
+            if not messagebox.askyesno("Confirmation", "Supprimer cet élément ?"):
+                return
+            cols = list(self.tree_frais['columns'])
+            for idx, df_row in self.frais_df.iterrows():
+                if all(str(df_row[cols[i]]) == str(row_values[i]) for i in range(len(cols))):
+                    self.frais_df = self.frais_df.drop(idx).reset_index(drop=True)
+                    break
+            self._fill_tree_df(self.tree_frais, self.frais_df)
+        except Exception as e:
+            messagebox.showerror("Erreur", str(e))
+
+    # ------------------- Préparation / calcul -------------------
     def _prepare(self):
         try:
             charges = Path(self.config_mgr.resolve_path(self.var_charges_path.get()))
@@ -353,6 +497,7 @@ class AppGUI:
             self.lbl_prep_status.configure(text="Erreur")
             messagebox.showerror("Erreur préparation", f"{e}\n\nAssurez-vous que Charges/Locataires existent (utilisez ‘Vérifier les chemins’).")
 
+    # ------------------- Exports / fichiers -------------------
     def _export_log(self):
         try:
             fp = self.engine.export_log(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df)
@@ -403,184 +548,3 @@ class AppGUI:
                 subprocess.Popen(["xdg-open", fp])
         except Exception as e:
             messagebox.showerror("Ouverture de fichier", str(e))
-
-    def _show_frais_context_menu(self, event):
-        """Show context menu for Frais divers tree operations"""
-        try:
-            from tkinter import Menu
-            # Get the item at the cursor position
-            item_id = self.tree_frais.identify_row(event.y)
-            
-            # Create context menu
-            context_menu = Menu(self.root, tearoff=0)
-            
-            if item_id:
-                # If an item is selected
-                self.tree_frais.selection_set(item_id)
-                
-                # Check if it's a group header or data row
-                is_group_header = self.tree_frais.parent(item_id) == ""
-                
-                if is_group_header:
-                    context_menu.add_command(label="Ajouter un élément à ce groupe", 
-                                           command=lambda: self._add_frais_item(item_id))
-                else:
-                    context_menu.add_command(label="Modifier", 
-                                           command=lambda: self._edit_frais_item(item_id))
-                    context_menu.add_command(label="Supprimer", 
-                                           command=lambda: self._delete_frais_item(item_id))
-            else:
-                # If no item selected, show general options
-                context_menu.add_command(label="Ajouter un nouvel élément", 
-                                       command=self._add_frais_item_dialog)
-            
-            # Show menu at cursor position
-            context_menu.tk_popup(event.x_root, event.y_root)
-        except Exception as e:
-            print(f"Error showing context menu: {e}")
-    
-    def _add_frais_item(self, parent_group_id=None):
-        """Add a new item to a specific group"""
-        try:
-            if not hasattr(self, 'frais_df') or self.frais_df.empty:
-                messagebox.showwarning("Ajouter élément", "Aucune donnée Frais divers chargée")
-                return
-            
-            # Get the group name from parent
-            if parent_group_id:
-                group_values = self.tree_frais.item(parent_group_id, 'values')
-                group_name = group_values[0] if group_values else ""
-            else:
-                group_name = ""
-            
-            self._show_add_frais_dialog(group_name)
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Erreur lors de l'ajout: {e}")
-    
-    def _add_frais_item_dialog(self):
-        """Show dialog to add a new frais item"""
-        self._show_add_frais_dialog()
-    
-    def _show_add_frais_dialog(self, default_group=""):
-        """Show dialog to add a new frais item"""
-        try:
-            from tkinter import simpledialog, Toplevel, Label, Entry, Button, StringVar, OptionMenu
-            
-            # Create dialog window
-            dialog = Toplevel(self.root)
-            dialog.title("Ajouter un élément")
-            dialog.geometry("400x200")
-            dialog.resizable(False, False)
-            dialog.transient(self.root)
-            dialog.grab_set()
-            
-            # Center the dialog
-            dialog.update_idletasks()
-            x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
-            y = (dialog.winfo_screenheight() // 2) - (200 // 2)
-            dialog.geometry(f"400x200+{x}+{y}")
-            
-            # Variables
-            desc_var = StringVar()
-            montant_var = StringVar(value="0")
-            groupe_var = StringVar(value=default_group)
-            
-            # Get available groups
-            if 'Groupe' in self.frais_df.columns:
-                groups = self.frais_df['Groupe'].unique().tolist()
-            else:
-                groups = [""]
-            
-            # UI elements
-            Label(dialog, text="Description:").grid(row=0, column=0, sticky="w", padx=10, pady=5)
-            desc_entry = Entry(dialog, textvariable=desc_var, width=40)
-            desc_entry.grid(row=0, column=1, padx=10, pady=5)
-            
-            Label(dialog, text="Montant (CHF):").grid(row=1, column=0, sticky="w", padx=10, pady=5)
-            montant_entry = Entry(dialog, textvariable=montant_var, width=40)
-            montant_entry.grid(row=1, column=1, padx=10, pady=5)
-            
-            Label(dialog, text="Groupe:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
-            if groups and groups != [""]:
-                groupe_menu = OptionMenu(dialog, groupe_var, *groups)
-                groupe_menu.grid(row=2, column=1, sticky="ew", padx=10, pady=5)
-            else:
-                groupe_entry = Entry(dialog, textvariable=groupe_var, width=40)
-                groupe_entry.grid(row=2, column=1, padx=10, pady=5)
-            
-            # Buttons
-            btn_frame = ttk.Frame(dialog)
-            btn_frame.grid(row=3, column=0, columnspan=2, pady=20)
-            
-            def on_ok():
-                desc = desc_var.get().strip()
-                groupe = groupe_var.get().strip()
-                try:
-                    montant = float(montant_var.get())
-                except ValueError:
-                    montant = 0.0
-                
-                if not desc:
-                    messagebox.showwarning("Validation", "La description est requise")
-                    return
-                
-                if not groupe:
-                    messagebox.showwarning("Validation", "Le groupe est requis")
-                    return
-                
-                # Add to DataFrame
-                new_row = pd.DataFrame([{ 'Description': desc, 'Montant (CHF)': montant, 'Groupe': groupe }])
-                self.frais_df = pd.concat([self.frais_df, new_row], ignore_index=True)
-                
-                # Refresh display
-                self._fill_tree_df(self.tree_frais, self.frais_df)
-                dialog.destroy()
-            
-            def on_cancel():
-                dialog.destroy()
-            
-            Button(btn_frame, text="OK", command=on_ok).pack(side="left", padx=5)
-            Button(btn_frame, text="Annuler", command=on_cancel).pack(side="left", padx=5)
-            
-            # Focus on description field
-            desc_entry.focus()
-            
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Erreur lors de la création du dialogue: {e}")
-    
-    def _edit_frais_item(self, item_id):
-        """Edit the selected frais item"""
-        # This functionality already exists via double-click
-        # We can trigger it programmatically or just show a message
-        messagebox.showinfo("Modifier", "Double-cliquez sur une cellule pour la modifier")
-    
-    def _delete_frais_item(self, item_id):
-        """Delete the selected frais item"""
-        try:
-            if not hasattr(self, 'frais_df') or self.frais_df.empty:
-                return
-            
-            # Confirm deletion
-            result = messagebox.askyesno("Confirmer suppression", 
-                                       "Êtes-vous sûr de vouloir supprimer cet élément?")
-            if not result:
-                return
-            
-            # Get row values to identify the row in DataFrame
-            row_values = self.tree_frais.item(item_id, 'values')
-            if not row_values:
-                return
-            
-            # Find matching row in DataFrame
-            cols = list(self.tree_frais['columns'])
-            for idx, df_row in self.frais_df.iterrows():
-                if all(str(df_row[cols[i]]) == str(row_values[i]) for i in range(len(cols))):
-                    # Remove from DataFrame
-                    self.frais_df = self.frais_df.drop(idx).reset_index(drop=True)
-                    break
-            
-            # Refresh display
-            self._fill_tree_df(self.tree_frais, self.frais_df)
-            
-        except Exception as e:
-            messagebox.showerror("Erreur", f"Erreur lors de la suppression: {e}")
