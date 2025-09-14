@@ -51,10 +51,6 @@ class AppGUI:
         self.var_frais_path   = tk.StringVar(value=self.config_mgr.load_user_setting('frais_path', defaults.get("frais_path","")))
         self.var_si_path      = tk.StringVar(value=self.config_mgr.load_user_setting('si_path', defaults.get("si_path","")))
         self.var_output_dir   = tk.StringVar(value=self.config_mgr.load_user_setting('output_dir', str((self.base_dir/'out').resolve())))
-        self.var_period       = tk.StringVar(value="2025-07")
-
-        self.lbl_load_status = None
-        self.lbl_prep_status = None
 
         self._build_tabs()
 
@@ -125,16 +121,23 @@ class AppGUI:
         row("Frais divers (Excel)", self.var_frais_path)
         row("Données SI (Excel)", self.var_si_path)
         row("Dossier de sortie", self.var_output_dir, is_dir=True)
-        ttk.Label(frm, text="Période (AAAA-MM):").pack(side="left", padx=(2,4)); ttk.Entry(frm, textvariable=self.var_period, width=10).pack(side="left")
 
         vfrm = ttk.Frame(self.tab_files); vfrm.pack(fill="x", padx=10, pady=(0,6))
         ttk.Button(vfrm, text="Vérifier les chemins", command=self._verify_paths).pack(side="left")
 
         btns = ttk.Frame(self.tab_files); btns.pack(fill="x", padx=10, pady=6)
-        ttk.Button(btns, text="Charger les données", command=self._load_all).pack(side="left")
-        self.lbl_load_status = ttk.Label(btns, text="", style="Success.TLabel"); self.lbl_load_status.pack(side="left", padx=10)
-        ttk.Button(btns, text="Préparer Répartition", command=self._prepare).pack(side="left", padx=(20,0))
-        self.lbl_prep_status = ttk.Label(btns, text="", style="Success.TLabel"); self.lbl_prep_status.pack(side="left", padx=10)
+        ttk.Button(btns, text="Charger les données et exécuter les calculs", command=self._load_and_calculate).pack(side="left")
+        self.lbl_combined_status = ttk.Label(btns, text="", style="Success.TLabel"); self.lbl_combined_status.pack(side="left", padx=10)
+
+        # Console area for dynamic status updates
+        console_frame = ttk.LabelFrame(self.tab_files, text="Console - Suivi des opérations", padding=10)
+        console_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        self.console_text = tk.Text(console_frame, height=8, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(console_frame, orient="vertical", command=self.console_text.yview)
+        self.console_text.configure(yscrollcommand=scrollbar.set)
+        self.console_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
         # preview tab
         self.preview_nb = ttk.Notebook(self.tab_preview); self.preview_nb.pack(fill="both", expand=True)
@@ -190,62 +193,115 @@ class AppGUI:
             key = 'charges_path' if var is self.var_charges_path else ('tenants_path' if var is self.var_tenants_path else ('frais_path' if var is self.var_frais_path else ('si_path' if var is self.var_si_path else ('output_dir' if var is self.var_output_dir else None))))
             if key: self.config_mgr.save_user_setting(key, p)
 
-    def _load_all(self):
+    def _log_to_console(self, message):
+        """Add a message to the console with timestamp"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}\n"
+        
+        self.console_text.config(state="normal")
+        self.console_text.insert("end", formatted_message)
+        self.console_text.config(state="disabled")
+        self.console_text.see("end")  # Auto-scroll to bottom
+        self.root.update()  # Force UI update
+
+    def _clear_console(self):
+        """Clear the console"""
+        self.console_text.config(state="normal")
+        self.console_text.delete("1.0", "end")
+        self.console_text.config(state="disabled")
+
+    def _load_and_calculate(self):
+        """Combined method that loads data and performs calculations with status updates"""
+        self._clear_console()
+        self._log_to_console("🔄 Début du traitement...")
+        self.lbl_combined_status.configure(text="En cours...")
+        
         try:
-            charges = Path(self.config_mgr.resolve_path(self.var_charges_path.get()))
-            tenants = Path(self.config_mgr.resolve_path(self.var_tenants_path.get())) if self.var_tenants_path.get() else None
-            if not charges.exists():
-                raise FileNotFoundError(f"Charges annuelles introuvable: {charges}")
-            previews, tenants_df = self.engine.preview_tables(charges, tenants)
-            self.previews = previews; self.tenants_df = tenants_df if tenants_df is not None else pd.DataFrame()
-            for child in self.preview_nb.winfo_children(): child.destroy()
-            self.trees = {}
-            for sh, df in previews.items():
-                tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text=sh)
-                tv = self._make_tree(tab); self.trees[sh] = tv
-                self._fill_tree_df(tv, df)
-            # Frais divers
-            if self.var_frais_path.get():
-                try:
-                    xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
-                    shname = xlsf.sheet_names[0]
-                    self.frais_sheet_name = shname
-                    self.frais_df = xlsf.parse(shname)
-                    tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
-                    self.tree_frais = self._make_tree(tabf)
-                    self._fill_tree_df(self.tree_frais, self.frais_df)
-                    self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
-                    self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))  # Right-click context menu
-                except Exception:
-                    pass
-            # Locataires
-            if self.tenants_df is not None and not self.tenants_df.empty:
-                tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text="Locataires")
-                tv = self._make_tree(tab); self.trees["Locataires"]=tv; self._fill_tree_df(tv, self.tenants_df)
-            # Synthèse PAC/Energie
+            # Step 1: Load data
+            self._log_to_console("📂 Chargement des données en cours...")
+            self._load_all_internal()
+            self._log_to_console("✅ Données chargées avec succès")
+            
+            # Step 2: Prepare calculations
+            self._log_to_console("🧮 Préparation des calculs en cours...")
+            self._prepare_internal()
+            self._log_to_console("✅ Calculs terminés avec succès")
+            
+            # Final status
+            sheets = len(self.previews) if self.previews else 0
+            apts = len(self.tenants_df) if self.tenants_df is not None and not self.tenants_df.empty else 0
+            rows = len(self.rep_df) if self.rep_df is not None and not self.rep_df.empty else 0
+            
+            self._log_to_console(f"📊 Résumé: {sheets} feuilles, {apts} appartements, {rows} lignes de répartition")
+            self._log_to_console("🎉 Traitement terminé avec succès!")
+            self.lbl_combined_status.configure(text=f"✓ Terminé — Feuilles: {sheets} | Appartements: {apts} | Répartitions: {rows}")
+            
+        except Exception as e:
+            self._log_to_console(f"❌ Erreur: {str(e)}")
+            self.lbl_combined_status.configure(text="Erreur")
+            messagebox.showerror("Erreur", f"Erreur lors du traitement:\n{e}\n\nVérifiez les chemins dans l'onglet Fichiers & Config.")
+
+    def _load_all_internal(self):
+        charges = Path(self.config_mgr.resolve_path(self.var_charges_path.get()))
+        tenants = Path(self.config_mgr.resolve_path(self.var_tenants_path.get())) if self.var_tenants_path.get() else None
+        if not charges.exists():
+            raise FileNotFoundError(f"Charges annuelles introuvable: {charges}")
+        previews, tenants_df = self.engine.preview_tables(charges, tenants)
+        self.previews = previews; self.tenants_df = tenants_df if tenants_df is not None else pd.DataFrame()
+        for child in self.preview_nb.winfo_children(): child.destroy()
+        self.trees = {}
+        for sh, df in previews.items():
+            tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text=sh)
+            tv = self._make_tree(tab); self.trees[sh] = tv
+            self._fill_tree_df(tv, df)
+        # Frais divers
+        if self.var_frais_path.get():
             try:
-                from .app_logic import _kwh_totals
-                xls = pd.ExcelFile(charges)
-                hp_p,hc_p,sol_p = _kwh_totals(xls, "PAC")
-                hp_c,hc_c,sol_c = _kwh_totals(xls, "Communs")
-                ef = 0.0; ec = 0.0
-                if "Eau Froide" in xls.sheet_names: ef = float(pd.to_numeric(xls.parse("Eau Froide").iloc[-1].drop(labels=["Période"], errors="ignore"), errors="coerce").fillna(0).sum())
-                if "Eau Chaude" in xls.sheet_names: ec = float(pd.to_numeric(xls.parse("Eau Chaude").iloc[-1].drop(labels=["Période"], errors="ignore"), errors="coerce").fillna(0).sum())
-                df_sum = pd.DataFrame([
-                    {"Bloc":"PAC","HP_kWh":hp_p,"HC_kWh":hc_p,"Sol_kWh":sol_p},
-                    {"Bloc":"Communs","HP_kWh":hp_c,"HC_kWh":hc_c,"Sol_kWh":sol_c},
-                    {"Bloc":"Eau (m³)","EF_m3":ef,"EC_m3":ec}
-                ])
-                tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text="PAC/Energie")
-                self.tree_pac_energy = self._make_tree(tab); self._fill_tree_df(self.tree_pac_energy, df_sum)
+                xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
+                shname = xlsf.sheet_names[0]
+                self.frais_sheet_name = shname
+                self.frais_df = xlsf.parse(shname)
+                tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
+                self.tree_frais = self._make_tree(tabf)
+                self._fill_tree_df(self.tree_frais, self.frais_df)
+                self.tree_frais.bind("<Double-1>", lambda ev: self._start_edit_cell(ev, self.tree_frais, 'frais'))
+                self.tree_frais.bind("<Button-3>", lambda ev: self._show_frais_context_menu(ev))  # Right-click context menu
             except Exception:
                 pass
-            sheets = len(previews)
-            apts = len(self.tenants_df) if self.tenants_df is not None else 0
-            self.lbl_load_status.configure(text=f"✓ Chargé — Feuilles: {sheets} | Appartements: {apts}")
-        except Exception as e:
-            self.lbl_load_status.configure(text="Erreur")
-            messagebox.showerror("Erreur chargement", f"{e}\n\nVérifiez les chemins dans l’onglet Fichiers & Config (ou cliquez ‘Vérifier les chemins’).")
+        # Locataires
+        if self.tenants_df is not None and not self.tenants_df.empty:
+            tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text="Locataires")
+            tv = self._make_tree(tab); self.trees["Locataires"]=tv; self._fill_tree_df(tv, self.tenants_df)
+        # Synthèse PAC/Energie
+        try:
+            from .app_logic import _kwh_totals
+            xls = pd.ExcelFile(charges)
+            hp_p,hc_p,sol_p = _kwh_totals(xls, "PAC")
+            hp_c,hc_c,sol_c = _kwh_totals(xls, "Communs")
+            ef = 0.0; ec = 0.0
+            if "Eau Froide" in xls.sheet_names: ef = float(pd.to_numeric(xls.parse("Eau Froide").iloc[-1].drop(labels=["Période"], errors="ignore"), errors="coerce").fillna(0).sum())
+            if "Eau Chaude" in xls.sheet_names: ec = float(pd.to_numeric(xls.parse("Eau Chaude").iloc[-1].drop(labels=["Période"], errors="ignore"), errors="coerce").fillna(0).sum())
+            df_sum = pd.DataFrame([
+                {"Bloc":"PAC","HP_kWh":hp_p,"HC_kWh":hc_p,"Sol_kWh":sol_p},
+                {"Bloc":"Communs","HP_kWh":hp_c,"HC_kWh":hc_c,"Sol_kWh":sol_c},
+                {"Bloc":"Eau (m³)","EF_m3":ef,"EC_m3":ec}
+            ])
+            tab = ttk.Frame(self.preview_nb); self.preview_nb.add(tab, text="PAC/Energie")
+            self.tree_pac_energy = self._make_tree(tab); self._fill_tree_df(self.tree_pac_energy, df_sum)
+        except Exception:
+            pass
+
+    def _prepare_internal(self):
+        charges = Path(self.config_mgr.resolve_path(self.var_charges_path.get()))
+        if not charges.exists():
+            raise FileNotFoundError(f"Charges annuelles introuvable: {charges}")
+        tenants_df = self.tenants_df if not self.tenants_df.empty else pd.DataFrame()
+        rep, details, details_text = self.engine.build_repartitions(charges, tenants_df)
+        self.rep_df = rep; self.details_df = details; self.details_text = details_text
+        self._fill_tree_df(self.tree_reps, rep)
+        self._fill_tree_df(self.tree_price, details)
+        self.txt_details.delete("1.0","end"); self.txt_details.insert("end", details_text)
 
     def _start_edit_cell(self, event, tv, df_name):
         region = tv.identify('region', event.x, event.y); 
@@ -331,15 +387,17 @@ class AppGUI:
             self._fill_tree_df(self.tree_reps, rep)
             self._fill_tree_df(self.tree_price, details)
             self.txt_details.delete("1.0","end"); self.txt_details.insert("end", details_text)
-            rows = len(rep) if rep is not None else 0
-            self.lbl_prep_status.configure(text=f"✓ Répartition prête — lignes: {rows}")
         except Exception as e:
-            self.lbl_prep_status.configure(text="Erreur")
-            messagebox.showerror("Erreur préparation", f"{e}\n\nAssurez-vous que Charges/Locataires existent (utilisez ‘Vérifier les chemins’).")
+            messagebox.showerror("Erreur préparation", f"{e}\n\nAssurez-vous que Charges/Locataires existent (utilisez 'Vérifier les chemins').")
+
+    def _get_current_period(self):
+        """Generate current period in format YYYY-MM"""
+        import datetime
+        return datetime.datetime.now().strftime("%Y-%m")
 
     def _export_log(self):
         try:
-            fp = self.engine.export_log(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df)
+            fp = self.engine.export_log(Path(self.var_output_dir.get()), self._get_current_period(), self.rep_df)
             messagebox.showinfo("Log exporté", f"Historique mis à jour :\n{fp}")
             self._refresh_files()
         except Exception as e:
@@ -347,7 +405,7 @@ class AppGUI:
 
     def _export_invoices(self):
         try:
-            base, files = self.engine.export_invoices_xlsx(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df, self.tenants_df)
+            base, files = self.engine.export_invoices_xlsx(Path(self.var_output_dir.get()), self._get_current_period(), self.rep_df, self.tenants_df)
             messagebox.showinfo("Factures", f"XLSX créés dans :\n{base}")
             self._refresh_files()
         except Exception as e:
@@ -355,7 +413,7 @@ class AppGUI:
 
     def _export_invoices_pdf(self):
         try:
-            base, files = self.engine.export_invoices_pdf(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df, self.tenants_df)
+            base, files = self.engine.export_invoices_pdf(Path(self.var_output_dir.get()), self._get_current_period(), self.rep_df, self.tenants_df)
             messagebox.showinfo("Factures PDF", f"PDF créés dans :\n{base}")
             self._refresh_files()
         except Exception as e:
