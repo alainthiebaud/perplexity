@@ -243,7 +243,7 @@ class CalculationEngine:
             wb.save(fp); files.append(fp)
         return str(out_base), [str(p) for p in files]
 
-    def export_invoices_pdf(self, out_dir: Path, period_label: str, rep_df: pd.DataFrame, tenant_infos: pd.DataFrame, header_title: str = "Facture d'électricité - Décompte groupé"):
+    def export_invoices_pdf(self, out_dir: Path, period_label: str, rep_df: pd.DataFrame, tenant_infos: pd.DataFrame, header_title: str = "Facture d'électricité - Décompte groupé", version_label: str = "Chat151"):
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.pdfgen import canvas
@@ -276,7 +276,7 @@ class CalculationEngine:
             tbl = Table(data, colWidths=[100*mm, 50*mm])
             tbl.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.black),("BACKGROUND",(0,0),(-1,0),colors.lightgrey),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("ALIGN",(1,1),(1,-1),"RIGHT"),("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold")]))
             _, th = tbl.wrapOn(c, W-2*margin, y-margin); tbl.drawOn(c, margin, y-th); y = y-th-20
-            c.setFont("Helvetica-Oblique", 8); c.drawString(margin, margin, "Facture générée automatiquement (Chat149).")
+            c.setFont("Helvetica-Oblique", 8); c.drawString(margin, margin, f"Facture générée automatiquement ({version_label}).")
             c.showPage()
             y = H - margin; c.setFont("Helvetica-Bold", 12); c.drawString(margin, y, "Détails des calculs"); y -= 12
             c.setFont("Helvetica", 9)

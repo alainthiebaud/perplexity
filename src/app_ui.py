@@ -10,7 +10,7 @@ from .app_logic import CalculationEngine, _kwh_totals
 
 # APP_VERSION de base; la partie numérique sera incrémentée automatiquement à chaque modification du fichier
 APP_VERSION_PREFIX = 'Chat'
-APP_VERSION_BASE_NUMBER = 149  # point de départ si aucun historique
+APP_VERSION_BASE_NUMBER = 151  # point de départ si aucun historique
 
 class AppGUI:
     def __init__(self, root: tk.Tk):
@@ -608,7 +608,7 @@ class AppGUI:
 
     def _export_invoices_pdf(self):
         try:
-            base, files = self.engine.export_invoices_pdf(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df, self.tenants_df)
+            base, files = self.engine.export_invoices_pdf(Path(self.var_output_dir.get()), self.var_period.get(), self.rep_df, self.tenants_df, version_label=self.dynamic_version_label)
             messagebox.showinfo("Factures PDF", f"PDF créés dans :\n{base}")
             self._refresh_files()
         except Exception as e:
