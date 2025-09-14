@@ -1,0 +1,6 @@
+rem @echo off
+cd /d "%~dp0"
+git pull
+python main.py
+pause
+.
