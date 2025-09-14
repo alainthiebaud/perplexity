@@ -104,6 +104,38 @@ class AppGUI:
             self.status_bar.configure(text=f"Version: {self.dynamic_version_label}")
 
     # ------------------- UI Helpers -------------------
+    def _load_frais_all_sheets(self, excel_path):
+        """
+        Charge et concatène toutes les feuilles d'un fichier Excel qui ont une colonne 'Description'.
+        Ajoute une colonne '__Feuille__' pour identifier la source.
+        """
+        try:
+            xlsf = pd.ExcelFile(excel_path)
+            frames = []
+            
+            for sheet_name in xlsf.sheet_names:
+                try:
+                    df = xlsf.parse(sheet_name)
+                    if not df.empty and 'Description' in df.columns:
+                        df = df.copy()
+                        df['__Feuille__'] = sheet_name
+                        frames.append(df)
+                except Exception:
+                    # Si on ne peut pas lire une feuille, on l'ignore
+                    continue
+            
+            if frames:
+                # Concaténer toutes les feuilles
+                combined_df = pd.concat(frames, ignore_index=True)
+                return combined_df
+            else:
+                # Fallback: retourner DataFrame vide avec colonnes de base
+                return pd.DataFrame(columns=['Description', 'Montant (CHF)', '__Feuille__'])
+                
+        except Exception as e:
+            print(f"Erreur lors du chargement des feuilles: {e}")
+            return pd.DataFrame(columns=['Description', 'Montant (CHF)', '__Feuille__'])
+
     def _make_tree(self, parent):
         tv = ttk.Treeview(parent, show="headings", height=16)
         vsb = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
@@ -116,7 +148,8 @@ class AppGUI:
         for c in tv.get_children(): tv.delete(c)
         if df is None or df.empty:
             tv["columns"] = ["(vide)"]; tv.heading("(vide)", text="(vide)"); tv.column("(vide)", width=200); return
-        if 'Groupe' in df.columns and tv == getattr(self, 'tree_frais', None):
+        # Utiliser '__Feuille__' ou 'Groupe' pour l'affichage hiérarchique
+        if ('__Feuille__' in df.columns or 'Groupe' in df.columns) and tv == getattr(self, 'tree_frais', None):
             self._fill_tree_hierarchical(tv, df)
         else:
             self._fill_tree_flat(tv, df)
@@ -136,8 +169,14 @@ class AppGUI:
         for c in cols:
             tv.heading(c, text=c, command=lambda col=c, tree=tv: self._sort_tree(tree, col))
             tv.column(c, width=120, stretch=True)
+        # Utiliser '__Feuille__' de préférence, sinon 'Groupe'
+        group_column = '__Feuille__' if '__Feuille__' in df.columns else 'Groupe'
+        if group_column not in df.columns:
+            # Fallback vers affichage plat si pas de colonne de groupement
+            self._fill_tree_flat(tv, df)
+            return
         # Tri des groupes alphabétique insensible à la casse
-        grouped = df.groupby('Groupe', sort=False)
+        grouped = df.groupby(group_column, sort=False)
         for group_name, group_df in sorted(grouped, key=lambda t: str(t[0]).lower()):
             # Tri interne par Description si présente
             if 'Description' in group_df.columns:
@@ -287,10 +326,13 @@ class AppGUI:
             # Frais divers
             if self.var_frais_path.get():
                 try:
-                    xlsf = pd.ExcelFile(self.config_mgr.resolve_path(self.var_frais_path.get()))
-                    shname = xlsf.sheet_names[0]
-                    self.frais_sheet_name = shname
-                    self.frais_df = xlsf.parse(shname)
+                    frais_path = self.config_mgr.resolve_path(self.var_frais_path.get())
+                    # Charger et concaténer toutes les feuilles avec 'Description'
+                    self.frais_df = self._load_frais_all_sheets(frais_path)
+                    # Garder la référence au nom de feuille pour compatibilité (utilise le premier sheet disponible)
+                    xlsf = pd.ExcelFile(frais_path)
+                    self.frais_sheet_name = xlsf.sheet_names[0] if xlsf.sheet_names else "Frais divers"
+                    
                     tabf = ttk.Frame(self.preview_nb); self.preview_nb.add(tabf, text="Frais divers")
                     self.tab_frais_frame = tabf
                     # Barre filtre
@@ -371,17 +413,28 @@ class AppGUI:
 
         desc_var = tk.StringVar(value=data.get('Description',''))
         montant_var = tk.StringVar(value=str(data.get('Montant (CHF)', '0')))
-        groupe_var = tk.StringVar(value=data.get('Groupe',''))
+        # Utiliser '__Feuille__' si disponible, sinon 'Groupe'
+        group_value = data.get('__Feuille__', data.get('Groupe', ''))
+        groupe_var = tk.StringVar(value=group_value)
 
         ttk.Label(dialog, text="Description:").grid(row=0, column=0, sticky='w', padx=8, pady=4)
         ttk.Entry(dialog, textvariable=desc_var, width=40).grid(row=0, column=1, padx=8, pady=4)
         ttk.Label(dialog, text="Montant (CHF):").grid(row=1, column=0, sticky='w', padx=8, pady=4)
         ttk.Entry(dialog, textvariable=montant_var, width=20).grid(row=1, column=1, padx=8, pady=4, sticky='w')
-        ttk.Label(dialog, text="Groupe:").grid(row=2, column=0, sticky='w', padx=8, pady=4)
+        
+        # Label dynamique pour le groupe/feuille
+        if '__Feuille__' in self.frais_df.columns:
+            group_label = "Feuille:"
+            group_column = '__Feuille__'
+        else:
+            group_label = "Groupe:"
+            group_column = 'Groupe'
+        
+        ttk.Label(dialog, text=group_label).grid(row=2, column=0, sticky='w', padx=8, pady=4)
         groups = []
-        if 'Groupe' in self.frais_df.columns:
+        if group_column in self.frais_df.columns:
             try:
-                groups = sorted([g for g in self.frais_df['Groupe'].dropna().unique().tolist() if str(g).strip()])
+                groups = sorted([g for g in self.frais_df[group_column].dropna().unique().tolist() if str(g).strip()])
             except Exception:
                 groups = []
         if groups:
@@ -408,7 +461,9 @@ class AppGUI:
                     if all(str(df_row[c]) == str(row_values[i]) for i, c in enumerate(cols)):
                         if 'Description' in cols: self.frais_df.at[idx, 'Description'] = new_desc
                         if 'Montant (CHF)' in cols: self.frais_df.at[idx, 'Montant (CHF)'] = new_amount
-                        if 'Groupe' in cols: self.frais_df.at[idx, 'Groupe'] = new_group
+                        # Mettre à jour le groupe approprié
+                        if '__Feuille__' in cols: self.frais_df.at[idx, '__Feuille__'] = new_group
+                        elif 'Groupe' in cols: self.frais_df.at[idx, 'Groupe'] = new_group
                         updated = True
                         break
                 if updated:
@@ -455,6 +510,8 @@ class AppGUI:
                 mask = mask | df['Description'].astype(str).str.lower().str.contains(pattern, na=False)
             if 'Groupe' in df.columns:
                 mask = mask | df['Groupe'].astype(str).str.lower().str.contains(pattern, na=False)
+            if '__Feuille__' in df.columns:
+                mask = mask | df['__Feuille__'].astype(str).str.lower().str.contains(pattern, na=False)
             df_to_show = df[mask].copy()
         self._fill_tree_df(self.tree_frais, df_to_show)
         # Mettre à jour le label de l'onglet
@@ -523,10 +580,19 @@ class AppGUI:
             ttk.Entry(dlg, textvariable=desc_var, width=40).grid(row=0, column=1, padx=8, pady=4)
             ttk.Label(dlg, text="Montant (CHF):").grid(row=1, column=0, sticky='w', padx=8, pady=4)
             ttk.Entry(dlg, textvariable=montant_var, width=15).grid(row=1, column=1, padx=8, pady=4, sticky='w')
-            ttk.Label(dlg, text="Groupe:").grid(row=2, column=0, sticky='w', padx=8, pady=4)
+            
+            # Label dynamique pour le groupe/feuille
+            if '__Feuille__' in self.frais_df.columns:
+                group_label = "Feuille:"
+                group_column = '__Feuille__'
+            else:
+                group_label = "Groupe:"
+                group_column = 'Groupe'
+            
+            ttk.Label(dlg, text=group_label).grid(row=2, column=0, sticky='w', padx=8, pady=4)
             groups = []
-            if 'Groupe' in self.frais_df.columns:
-                try: groups = sorted([g for g in self.frais_df['Groupe'].dropna().unique().tolist() if str(g).strip()])
+            if group_column in self.frais_df.columns:
+                try: groups = sorted([g for g in self.frais_df[group_column].dropna().unique().tolist() if str(g).strip()])
                 except Exception: groups = []
             if groups:
                 ttk.Combobox(dlg, values=groups, textvariable=groupe_var, state='readonly').grid(row=2, column=1, padx=8, pady=4, sticky='w')
@@ -540,7 +606,15 @@ class AppGUI:
                 try: montant = float(montant_var.get())
                 except ValueError: messagebox.showwarning("Validation", "Montant invalide"); return
                 grp = groupe_var.get().strip() or "Sans groupe"
-                new_row = pd.DataFrame([{ 'Description': desc, 'Montant (CHF)': montant, 'Groupe': grp }])
+                
+                # Créer une nouvelle ligne avec les colonnes appropriées
+                new_row_data = { 'Description': desc, 'Montant (CHF)': montant }
+                if '__Feuille__' in self.frais_df.columns:
+                    new_row_data['__Feuille__'] = grp
+                else:
+                    new_row_data['Groupe'] = grp
+                
+                new_row = pd.DataFrame([new_row_data])
                 self.frais_df = pd.concat([self.frais_df, new_row], ignore_index=True)
                 self._apply_frais_filter(refresh_all=True)
                 dlg.destroy()
