@@ -1,7 +1,6 @@
 {
   "charges_path": "/tmp/test_data/charges_test.xlsx",
   "tenants_path": "/tmp/test_data/tenants_test.xlsx",
-  "frais_path": "C:/Users/a.thiebaud.IS/Direction Infotec/Thiébaud - Documents/Maison-Imeuble/LOCATION Appartements Orbe 68/Charges/Documents/Nom des locataires.xlsx",
   "si_path": "/tmp/test_data/si_test.xlsx",
   "output_dir": "/tmp/test_output"
 }
