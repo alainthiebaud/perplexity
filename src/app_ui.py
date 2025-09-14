@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -51,6 +50,7 @@ class AppGUI:
         self.var_frais_path   = tk.StringVar(value=self.config_mgr.load_user_setting('frais_path', defaults.get("frais_path","")))
         self.var_si_path      = tk.StringVar(value=self.config_mgr.load_user_setting('si_path', defaults.get("si_path","")))
         self.var_output_dir   = tk.StringVar(value=self.config_mgr.load_user_setting('output_dir', str((self.base_dir/'out').resolve())))
+        # Champ période supprimé de l'UI (on conserve la variable pour compatibilité export)
         self.var_period       = tk.StringVar(value="2025-07")
 
         self.lbl_load_status = None
@@ -125,15 +125,15 @@ class AppGUI:
         row("Frais divers (Excel)", self.var_frais_path)
         row("Données SI (Excel)", self.var_si_path)
         row("Dossier de sortie", self.var_output_dir, is_dir=True)
-        ttk.Label(frm, text="Période (AAAA-MM):").pack(side="left", padx=(2,4)); ttk.Entry(frm, textvariable=self.var_period, width=10).pack(side="left")
+        # Ligne période supprimée de l'interface
+        # ttk.Label(frm, text="Période (AAAA-MM):").pack(side="left", padx=(2,4)); ttk.Entry(frm, textvariable=self.var_period, width=10).pack(side="left")
 
         vfrm = ttk.Frame(self.tab_files); vfrm.pack(fill="x", padx=10, pady=(0,6))
         ttk.Button(vfrm, text="Vérifier les chemins", command=self._verify_paths).pack(side="left")
 
         btns = ttk.Frame(self.tab_files); btns.pack(fill="x", padx=10, pady=6)
-        ttk.Button(btns, text="Charger les données", command=self._load_all).pack(side="left")
+        ttk.Button(btns, text="Charger + Préparer", command=self._load_and_prepare).pack(side="left")
         self.lbl_load_status = ttk.Label(btns, text="", style="Success.TLabel"); self.lbl_load_status.pack(side="left", padx=10)
-        ttk.Button(btns, text="Préparer Répartition", command=self._prepare).pack(side="left", padx=(20,0))
         self.lbl_prep_status = ttk.Label(btns, text="", style="Success.TLabel"); self.lbl_prep_status.pack(side="left", padx=10)
 
         # preview tab
@@ -162,6 +162,22 @@ class AppGUI:
         self.tree_files = self._make_tree(self.tab_outputs)
         self.tree_files.bind("<Double-1>", self._open_selected_file)
 
+    def _load_and_prepare(self):
+        try:
+            self.lbl_load_status.configure(text="Chargement...")
+            self.lbl_prep_status.configure(text="")
+            self.root.update_idletasks()
+            self._load_all()
+            if self.lbl_load_status.cget("text").startswith("Erreur"):
+                return
+            self.lbl_prep_status.configure(text="Préparation...")
+            self.root.update_idletasks()
+            self._prepare()
+        except Exception as e:
+            self.lbl_load_status.configure(text="Erreur")
+            self.lbl_prep_status.configure(text="Erreur")
+            messagebox.showerror("Erreur", str(e))
+
     def _verify_paths(self):
         missing = []
         pairs = [
@@ -187,7 +203,7 @@ class AppGUI:
             p = filedialog.askopenfilename(filetypes=[("Excel","*.xlsx;*.xls")], initialdir=self.base_dir)
         if p:
             var.set(p)
-            key = 'charges_path' if var is self.var_charges_path else ('tenants_path' if var is self.var_tenants_path else ('frais_path' if var is self.var_frais_path else ('si_path' if var is self.var_si_path else ('output_dir' if var is self.var_output_dir else None))))
+            key = 'charges_path' if var is self.var_charges_path else ('tenants_path' if var is self.var_tenants_path else ('frais_path' if var is self.var_frais_path else ('si_path' if var is self.var_si_path else None)))
             if key: self.config_mgr.save_user_setting(key, p)
 
     def _load_all(self):
@@ -513,11 +529,7 @@ class AppGUI:
                     return
                 
                 # Add to DataFrame
-                new_row = pd.DataFrame([{
-                    'Description': desc,
-                    'Montant (CHF)': montant,
-                    'Groupe': groupe
-                }])
+                new_row = pd.DataFrame([{ 'Description': desc, 'Montant (CHF)': montant, 'Groupe': groupe }])
                 self.frais_df = pd.concat([self.frais_df, new_row], ignore_index=True)
                 
                 # Refresh display
